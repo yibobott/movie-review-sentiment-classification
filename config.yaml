@@ -1,5 +1,5 @@
 data:
-  data_dir: ../2026spring-sdsc6001-hw4
+  data_dir: ./2026spring-sdsc6001-hw4
   train_csv: train.csv
   unlabel_csv: train_unlabel.csv
   test_csv: test.csv

@@ -80,5 +80,6 @@ to diff hyperparameters across experiments.
 
 - Developed and tested with Python 3.11.15.
 - Core package versions are pinned in `requirements.txt`.
+- `gensim` is kept on a conservative NumPy/SciPy stack to avoid Word2Vec C-extension issues.
 - Global seed in `config.yaml` (default 42); applied to `random`, `numpy`, `torch`.
 - Each run snapshots the config used, alongside logs & checkpoints.
