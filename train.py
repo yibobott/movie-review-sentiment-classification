@@ -307,6 +307,21 @@ def main():
         f.write(f"git_sha: {sha}\n")
     logger.info(f"done. artifacts at {run_dir}")
 
+    # Rename run dir to include final val acc for at-a-glance comparison.
+    # Close the file handler first so Windows does not lock the directory.
+    import logging as _logging
+    for _h in logger.handlers[:]:
+        if isinstance(_h, _logging.FileHandler):
+            _h.close()
+            logger.removeHandler(_h)
+    try:
+        acc_tag = f"{best.best_val_acc*100:.2f}"
+        new_run_dir = run_dir.parent / f"{run_name}_{acc_tag}"
+        run_dir.rename(new_run_dir)
+        print(f"[done] artifacts at {new_run_dir}")
+    except Exception as _e:
+        print(f"[done] artifacts at {run_dir}  (rename skipped: {_e})")
+
 
 if __name__ == "__main__":
     main()
