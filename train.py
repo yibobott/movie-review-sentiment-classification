@@ -265,7 +265,7 @@ def main():
     np.save(run_dir / "test_probs.npy", probs)
 
     # Summary
-    with open(run_dir / "summary.txt", "w") as f:
+    with open(run_dir / "summary.txt", "w", encoding="utf-8") as f:
         f.write(f"best_val_acc: {best.best_val_acc:.4f}\n")
         f.write(f"best_epoch: {best.best_epoch}\n")
         f.write(f"pseudo_added_per_round: {pseudo_added}\n")

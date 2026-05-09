@@ -98,7 +98,7 @@ class Config:
 
     @staticmethod
     def from_yaml(path: str | Path) -> "Config":
-        with open(path, "r") as f:
+        with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         return Config(
             data=DataConfig(**raw["data"]),
@@ -115,5 +115,5 @@ class Config:
         return asdict(self)
 
     def dump_yaml(self, path: str | Path) -> None:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(self.to_dict(), f, sort_keys=False)
