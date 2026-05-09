@@ -41,7 +41,6 @@ solution/
 ## Usage
 
 ```bash
-cd solution
 pip install -r requirements.txt
 python train.py                           # uses config.yaml
 python train.py --tag big_hidden          # appends tag to run folder name
@@ -79,5 +78,7 @@ to diff hyperparameters across experiments.
 
 ## Reproducibility
 
+- Developed and tested with Python 3.11.15.
+- Core package versions are pinned in `requirements.txt`.
 - Global seed in `config.yaml` (default 42); applied to `random`, `numpy`, `torch`.
 - Each run snapshots the config used, alongside logs & checkpoints.

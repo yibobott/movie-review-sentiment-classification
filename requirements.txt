@@ -1,7 +1,7 @@
-torch
-numpy
-pandas
-scikit-learn
-gensim
-pyyaml
-tqdm
+torch==2.11.0
+numpy==2.4.4
+pandas==3.0.2
+scikit-learn==1.8.0
+gensim==4.4.0
+pyyaml==6.0.3
+tqdm==4.67.3
