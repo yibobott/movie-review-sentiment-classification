@@ -61,6 +61,7 @@ def train_one_epoch(
     scheduler=None,
     per_step_sched: bool = False,
     ema: ModelEMA | None = None,
+    label_smoothing: float = 0.0,
 ) -> tuple[float, float]:
     model.train()
     total_loss = 0.0
@@ -69,9 +70,15 @@ def train_one_epoch(
     for x, y in loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True).float()
+        # Apply binary label smoothing on the soft targets only (train-time);
+        # validation/accuracy still uses the original {0,1} labels.
+        if label_smoothing > 0.0:
+            y_soft = y * (1.0 - label_smoothing) + 0.5 * label_smoothing
+        else:
+            y_soft = y
         optimizer.zero_grad(set_to_none=True)
         logits = model(x)
-        loss = criterion(logits, y)
+        loss = criterion(logits, y_soft)
         loss.backward()
         if grad_clip and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -150,6 +157,7 @@ def train(
         tr_loss, tr_acc = train_one_epoch(
             model, train_loader, optimizer, criterion, device,
             cfg.grad_clip, scheduler=scheduler, per_step_sched=per_step_sched, ema=ema,
+            label_smoothing=cfg.label_smoothing,
         )
         val_loss, val_acc = valid_one_epoch(model, val_loader, criterion, device)
         ema_val_acc = None

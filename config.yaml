@@ -28,9 +28,9 @@ preprocess:
 model:
   hidden_dim: 256
   num_layers: 2
-  dropout: 0.55                # intra-LSTM + classifier dropout
-  embed_dropout: 0.4
-  embed_noise_std: 0.10        # Gaussian noise on embeddings during training
+  dropout: 0.6                 # A: stronger intra-LSTM + classifier dropout
+  embed_dropout: 0.5           # A: stronger embedding dropout
+  embed_noise_std: 0.15        # A: stronger Gaussian noise on embeddings
   bidirectional: true
   fix_embedding: false         # fine-tune embedding for better acc
   pool: attn_max_mean          # concat of attention / max / mean pooling
@@ -38,8 +38,8 @@ model:
 train:
   batch_size: 64
   epochs: 30                  # was 25 - give init more headroom; early-stop will cut it short anyway
-  lr: 8.0e-4
-  weight_decay: 5.0e-5         # stronger decoupled weight decay (AdamW)
+  lr: 5.0e-4                   # B: lower init lr to slow down overfitting
+  weight_decay: 1.0e-4         # A: stronger decoupled weight decay (AdamW)
   grad_clip: 1.0
   val_ratio: 0.1
   early_stop_patience: 10      # raised so epochs=30 is actually reachable
@@ -49,17 +49,18 @@ train:
   warmup_ratio: 0.06
   ema_decay: 0.999             # EMA of weights; single model, so ensemble-rule compliant
   ema_warmup_epochs: 2         # don't pick EMA ckpt until shadow has warmed up
-  word_dropout: 0.20           # randomly replace tokens with <UNK> during training
+  word_dropout: 0.25           # A: stronger token-level dropout
+  label_smoothing: 0.05        # C: soften BCE targets to reduce miscalibration / overfit
 
 self_training:
   enable: true
   rounds: 3                    # r2 was still improving at last epoch -> add r3
-  pos_threshold: 0.97          # stricter -> cleaner pseudo labels
-  neg_threshold: 0.03          # mirror of pos_threshold for symmetric cleanliness
-  max_pseudo_per_round: 20000  # cap number of pseudo samples added (balanced)
+  pos_threshold: 0.95          # loosened: stronger reg lowers model confidence overall
+  neg_threshold: 0.05          # mirror of pos_threshold for symmetric cleanliness
+  max_pseudo_per_round: 30000  # E: raised cap so r1 isn't artificially capped
   balance_pseudo: true         # take equal #pos and #neg each round
   finetune_epochs: 10          # was 5 — cosine hit lr=0 while val was still rising
-  finetune_lr: 2.0e-4          # slightly higher; longer schedule has more decay headroom
+  finetune_lr: 1.0e-4          # D: lower finetune lr; r1 was barely improving with 2e-4
 
 inference:
   batch_size: 256

@@ -66,6 +66,7 @@ class TrainConfig:
     ema_decay: float = 0.0                   # 0 disables EMA
     ema_warmup_epochs: int = 0               # epochs to skip EMA ckpt selection while shadow warms up
     word_dropout: float = 0.0                # augmentation during training
+    label_smoothing: float = 0.0             # BCE target softening epsilon
 
 
 @dataclass
