@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+
+# Training data
+train.csv
+train_unlabel.csv
+test.csv
+sample_submission.csv
+
+# Model artifacts and checkpoints
+results/

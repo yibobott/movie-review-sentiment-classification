@@ -1,0 +1,55 @@
+data:
+  data_dir: ../2026spring-sdsc6001-hw4
+  train_csv: train.csv
+  unlabel_csv: train_unlabel.csv
+  test_csv: test.csv
+  sample_submission: sample_submission.csv
+
+output:
+  result_root: results          # each run -> results/<timestamp>/
+
+seed: 42
+
+preprocess:
+  sen_len: 200                 # pad / truncate length
+  lowercase: true
+  min_count: 3
+  w2v_vector_size: 256
+  w2v_window: 5
+  w2v_epochs: 12
+  w2v_sg: 1                    # skip-gram
+  w2v_negative: 10
+  w2v_workers: 8
+  # If given, skip training w2v and reuse cached model
+  w2v_cache_path: null
+
+model:
+  hidden_dim: 192
+  num_layers: 2
+  dropout: 0.4
+  bidirectional: true
+  fix_embedding: false         # fine-tune embedding for better acc
+  pool: attn_max_mean          # concat of attention / max / mean pooling
+
+train:
+  batch_size: 128
+  epochs: 12
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  grad_clip: 1.0
+  val_ratio: 0.1
+  early_stop_patience: 3
+  lr_scheduler: plateau        # plateau | cosine | none
+  lr_factor: 0.5
+  lr_patience: 1
+
+self_training:
+  enable: true
+  rounds: 2                    # how many self-training rounds
+  pos_threshold: 0.9           # prob >= pos_threshold -> label 1
+  neg_threshold: 0.1           # prob <= neg_threshold -> label 0
+  max_pseudo_per_round: 30000  # cap number of pseudo samples added
+  finetune_epochs: 6           # epochs for each self-training round
+
+inference:
+  batch_size: 256
