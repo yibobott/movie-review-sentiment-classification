@@ -64,6 +64,7 @@ class TrainConfig:
     lr_patience: int = 1
     warmup_ratio: float = 0.05
     ema_decay: float = 0.0                   # 0 disables EMA
+    ema_warmup_epochs: int = 0               # epochs to skip EMA ckpt selection while shadow warms up
     word_dropout: float = 0.0                # augmentation during training
 
 
@@ -74,6 +75,7 @@ class SelfTrainingConfig:
     pos_threshold: float = 0.9
     neg_threshold: float = 0.1
     max_pseudo_per_round: int = 30000
+    balance_pseudo: bool = True              # take equal #pos and #neg per round
     finetune_epochs: int = 6
     finetune_lr: Optional[float] = None      # defaults to train.lr when None
 

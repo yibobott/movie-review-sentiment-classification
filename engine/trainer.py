@@ -167,9 +167,20 @@ def train(
         if cfg.lr_scheduler == "plateau" and scheduler is not None:
             scheduler.step(val_acc)
 
-        # Use EMA val acc when available for checkpoint selection.
-        eff_val = ema_val_acc if ema_val_acc is not None else val_acc
-        eff_state = shadow_model.state_dict() if ema_val_acc is not None else model.state_dict()
+        # Pick the better of EMA and raw weights for the checkpoint. EMA needs
+        # a few epochs to warm up (shadow starts at random init), so during
+        # `ema_warmup_epochs` we always trust the raw weights.
+        use_ema = (
+            ema_val_acc is not None
+            and epoch > cfg.ema_warmup_epochs
+            and ema_val_acc >= val_acc
+        )
+        if use_ema:
+            eff_val = ema_val_acc
+            eff_state = shadow_model.state_dict()
+        else:
+            eff_val = val_acc
+            eff_state = model.state_dict()
 
         if eff_val > best.best_val_acc:
             best.best_val_acc = eff_val

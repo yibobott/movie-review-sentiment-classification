@@ -52,17 +52,46 @@ def build_loaders(X_train, y_train, X_val, y_val, batch_size, word_dropout: floa
     return tr, va
 
 
-def pick_pseudo(probs: np.ndarray, pos_th: float, neg_th: float, cap: int):
-    pos_mask = probs >= pos_th
-    neg_mask = probs <= neg_th
-    # rank by confidence (distance from 0.5)
-    conf = np.abs(probs - 0.5)
-    keep = pos_mask | neg_mask
-    idx = np.where(keep)[0]
-    if len(idx) > cap:
-        order = np.argsort(-conf[idx])
-        idx = idx[order[:cap]]
-    labels = (probs[idx] >= 0.5).astype(np.int64)
+def pick_pseudo(
+    probs: np.ndarray,
+    pos_th: float,
+    neg_th: float,
+    cap: int,
+    balance: bool = True,
+):
+    """Select high-confidence pseudo-labeled candidates.
+
+    When ``balance`` is True, take the most confident ``cap // 2`` positives
+    and the most confident ``cap // 2`` negatives. This prevents the model's
+    existing class bias from being amplified during self-training.
+    """
+    pos_idx = np.where(probs >= pos_th)[0]
+    neg_idx = np.where(probs <= neg_th)[0]
+    pos_conf = probs[pos_idx]
+    neg_conf = 1.0 - probs[neg_idx]
+
+    if balance:
+        n_each = cap // 2
+        if len(pos_idx) > n_each:
+            order = np.argsort(-pos_conf)
+            pos_idx = pos_idx[order[:n_each]]
+        if len(neg_idx) > n_each:
+            order = np.argsort(-neg_conf)
+            neg_idx = neg_idx[order[:n_each]]
+    else:
+        idx = np.concatenate([pos_idx, neg_idx])
+        conf = np.concatenate([pos_conf, neg_conf])
+        if len(idx) > cap:
+            order = np.argsort(-conf)
+            idx = idx[order[:cap]]
+        labels = (probs[idx] >= 0.5).astype(np.int64)
+        return idx, labels
+
+    idx = np.concatenate([pos_idx, neg_idx])
+    labels = np.concatenate([
+        np.ones(len(pos_idx), dtype=np.int64),
+        np.zeros(len(neg_idx), dtype=np.int64),
+    ])
     return idx, labels
 
 
@@ -187,6 +216,7 @@ def main():
             probs = predict_probs(model, un_loader, device)
             idx, pseudo_y = pick_pseudo(
                 probs, st.pos_threshold, st.neg_threshold, st.max_pseudo_per_round,
+                balance=st.balance_pseudo,
             )
             if len(idx) == 0:
                 logger.info(f"[self-train r{r}] no confident samples, stop")
