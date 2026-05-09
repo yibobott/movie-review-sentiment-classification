@@ -1,8 +1,8 @@
-torch==2.7.1
-numpy==2.4.4
-pandas==3.0.2
-scipy==1.17.1
-scikit-learn==1.8.0
+torch==2.10.0
+numpy==1.26.4
+scipy==1.12.0
+pandas==2.2.3
+scikit-learn==1.4.2
 gensim==4.4.0
 pyyaml==6.0.3
 tqdm==4.67.3
