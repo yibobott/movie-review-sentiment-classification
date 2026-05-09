@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from utils.config import Config  # noqa: E402
 from utils.logger import build_logger  # noqa: E402
-from utils.misc import pick_device, set_seed, timestamp  # noqa: E402
+from utils.misc import git_sha, pick_device, set_seed, timestamp  # noqa: E402
 from data.preprocess import (  # noqa: E402
     Vocab, load_labeled_csv, load_test_csv, load_unlabeled_csv, train_word2vec,
 )
@@ -129,9 +129,11 @@ def main():
     logger = build_logger(run_dir)
     logger.info(f"run dir: {run_dir}")
 
-    # snapshot config for reproducibility
+    # snapshot config + code version for reproducibility
     cfg.dump_yaml(run_dir / "config.yaml")
     shutil.copy(args.config, run_dir / "config.source.yaml")
+    sha = git_sha(ROOT)
+    logger.info(f"git sha: {sha}")
 
     device = pick_device()
     logger.info(f"device: {device}")
@@ -302,6 +304,7 @@ def main():
         f.write(f"best_val_acc: {best.best_val_acc:.4f}\n")
         f.write(f"best_epoch: {best.best_epoch}\n")
         f.write(f"pseudo_added_per_round: {pseudo_added}\n")
+        f.write(f"git_sha: {sha}\n")
     logger.info(f"done. artifacts at {run_dir}")
 
 

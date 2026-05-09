@@ -4,7 +4,9 @@ from __future__ import annotations
 import os
 import random
 import re
+import subprocess
 from datetime import datetime
+from pathlib import Path
 from typing import List
 
 import numpy as np
@@ -50,3 +52,17 @@ def pick_device() -> torch.device:
 
 def timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def git_sha(cwd: Path) -> str:
+    """Return the current git commit sha, or ``"unknown"`` if not available."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(cwd), capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    return "unknown"
