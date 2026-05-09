@@ -37,12 +37,12 @@ model:
 
 train:
   batch_size: 64
-  epochs: 25
+  epochs: 30                  # was 25 — give init more headroom; early-stop will cut it short anyway
   lr: 8.0e-4
   weight_decay: 5.0e-5         # stronger decoupled weight decay (AdamW)
   grad_clip: 1.0
   val_ratio: 0.1
-  early_stop_patience: 6       # let cosine fully decay before bailing
+  early_stop_patience: 10      # raised so epochs=30 is actually reachable
   lr_scheduler: warmup_cosine  # plateau | cosine | warmup_cosine | none
   lr_factor: 0.5               # used only by plateau
   lr_patience: 1               # used only by plateau
@@ -53,13 +53,13 @@ train:
 
 self_training:
   enable: true
-  rounds: 2                    # how many self-training rounds
-  pos_threshold: 0.95          # stricter -> cleaner pseudo labels
-  neg_threshold: 0.05
+  rounds: 3                    # r2 was still improving at last epoch -> add r3
+  pos_threshold: 0.97          # stricter -> cleaner pseudo labels
+  neg_threshold: 0.03          # mirror of pos_threshold for symmetric cleanliness
   max_pseudo_per_round: 20000  # cap number of pseudo samples added (balanced)
   balance_pseudo: true         # take equal #pos and #neg each round
-  finetune_epochs: 5           # epochs for each self-training round
-  finetune_lr: 1.5e-4          # well below initial lr to prevent re-overfitting
+  finetune_epochs: 10          # was 5 — cosine hit lr=0 while val was still rising
+  finetune_lr: 2.0e-4          # slightly higher; longer schedule has more decay headroom
 
 inference:
   batch_size: 256
