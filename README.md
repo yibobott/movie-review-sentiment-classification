@@ -84,27 +84,35 @@ to diff hyperparameters across experiments.
 
 | Area | Baseline | This version |
 |---|---|---|
-| Optimizer | SGD lr=1e-3, 2 epoch | Adam lr=1e-3, up to 12 epoch + early stop |
+| Optimizer | SGD lr=1e-3, 2 epoch | **AdamW** lr=8e-4, up to 20 epoch + early stop |
+| LR schedule | none | **warmup + cosine** (6% warmup) |
 | Loss | BCELoss + Sigmoid in model | **BCEWithLogitsLoss** (numerically stable) |
 | Split | first 13k for train (unstratified) | 90/10 **stratified** on 25k |
-| sen_len | 30 | **200** (covers p95 of token lengths) |
-| Tokenize | raw regex | lowercase + strip `<br />` |
-| Embedding | fixed w2v CBOW, vector=250 | **skip-gram + negative**, vector=256, fine-tuned |
-| Model | 1-layer unidir LSTM, last step | **2-layer BiLSTM** + attention/max/mean pooling + MLP head |
+| sen_len | 30 | **400** with **head+tail truncation** (keep 30% head / 70% tail) |
+| Tokenize | raw regex | lowercase + strip `<br />`/HTML/URL, preserve contractions (`don't`), collapse `!!!` / `loooove` |
+| Embedding | fixed w2v CBOW, vector=250 | **skip-gram + negative + subsampling**, vector=300, fine-tuned |
+| Model | 1-layer unidir LSTM, last step | **2-layer BiLSTM** (hidden=256) + attention/max/mean pooling + LayerNorm + GELU MLP head |
 | Pad handling | last step includes pads | masked pooling, PAD=0 idx |
-| Regularization | dropout=0.5 | dropout=0.4 + grad clip 1.0 + weight decay |
-| Unlabeled 50k | unused | **Self-training** 2 rounds, conf>=0.9 / <=0.1 |
+| Regularization | dropout=0.5 | dropout=0.5 + **embed dropout 0.3** + **embed Gaussian noise 0.05** + **word dropout 0.10** + grad clip + weight decay |
+| Weight averaging | none | **EMA (decay=0.999)** over training steps — single model, ensemble-rule compliant |
+| Unlabeled 50k | unused | **Self-training** 2 rounds, conf>=0.95 / <=0.05, cap 15k, finetune lr=3e-4 |
 | Logging | print to stdout | logger to file + stdout + per-run dir |
+
+### Why these help
+
+- **Longer head+tail context.** IMDb reviews put the verdict near the end; truncating only head (p90=547 tokens) throws away the punch line.
+- **Word dropout & embed noise.** Forces the LSTM to rely on multiple cues instead of memorising rare training tokens — closes the ~7-pt train/val gap we saw at val=90%.
+- **EMA weights.** Reduces the stochastic noise in SGD-ish training; the EMA val accuracy is usually the most honest early-stop signal and the best checkpoint.
+- **Stricter self-training + lower finetune LR.** The previous run regressed during self-training because finetune restarted Adam at lr=1e-3 on noisy pseudo labels. Stricter threshold + 3e-4 keeps gains.
 
 ## Tuning knobs (edit `config.yaml`)
 
-- `preprocess.sen_len` — try 150 / 250
-- `preprocess.min_count` — 3 keeps more rare words; 5 is more robust
-- `model.hidden_dim` / `num_layers` — 192×2 / 256×2
-- `model.fix_embedding` — set `true` if overfitting
-- `train.epochs` + `early_stop_patience`
+- `preprocess.sen_len` / `head_ratio` — 300/0.3 is faster; 500/0.25 catches even longer reviews
+- `model.hidden_dim` — 256 is a sweet spot; 384 helps if you have VRAM
+- `train.ema_decay` — 0.995 (faster adapting) / 0.999 (smoother); disable with 0
+- `train.word_dropout` — 0.05–0.15
 - `self_training.pos_threshold` / `neg_threshold` — higher = cleaner pseudo labels
-- `self_training.rounds` — 1–3
+- `self_training.finetune_lr` — try 1e-4 / 3e-4 / 5e-4
 
 ## Reproducibility
 

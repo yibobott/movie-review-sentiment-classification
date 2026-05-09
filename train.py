@@ -40,9 +40,15 @@ from engine.inference import predict_probs, save_predictions  # noqa: E402
 from gensim.models import Word2Vec  # noqa: E402
 
 
-def build_loaders(X_train, y_train, X_val, y_val, batch_size):
-    tr = DataLoader(SenDataset(X_train, y_train), batch_size=batch_size, shuffle=True, num_workers=0)
-    va = DataLoader(SenDataset(X_val, y_val), batch_size=batch_size, shuffle=False, num_workers=0)
+def build_loaders(X_train, y_train, X_val, y_val, batch_size, word_dropout: float = 0.0):
+    tr = DataLoader(
+        SenDataset(X_train, y_train, word_dropout=word_dropout),
+        batch_size=batch_size, shuffle=True, num_workers=0,
+    )
+    va = DataLoader(
+        SenDataset(X_val, y_val),
+        batch_size=batch_size, shuffle=False, num_workers=0,
+    )
     return tr, va
 
 
@@ -117,6 +123,7 @@ def main():
             vector_size=pp.w2v_vector_size, window=pp.w2v_window,
             min_count=pp.min_count, workers=pp.w2v_workers,
             sg=pp.w2v_sg, negative=pp.w2v_negative, epochs=pp.w2v_epochs,
+            sample=pp.w2v_sample,
             logger=logger,
         )
         w2v.save(str(run_dir / "w2v.model"))
@@ -126,10 +133,10 @@ def main():
     vocab = Vocab(w2v)
     logger.info(f"vocab size (incl. PAD/UNK): {len(vocab)}; embed_dim={w2v.vector_size}")
 
-    X_all = vocab.encode(train_tokens, pp.sen_len)
+    X_all = vocab.encode(train_tokens, pp.sen_len, head_ratio=pp.head_ratio)
     y_all = torch.from_numpy(y.astype(np.int64))
-    X_test = vocab.encode(test_tokens, pp.sen_len)
-    X_unlabel = vocab.encode(unlabel_tokens, pp.sen_len)
+    X_test = vocab.encode(test_tokens, pp.sen_len, head_ratio=pp.head_ratio)
+    X_unlabel = vocab.encode(unlabel_tokens, pp.sen_len, head_ratio=pp.head_ratio)
 
     # ---- Split ----
     tr_idx, va_idx = train_test_split(
@@ -142,6 +149,7 @@ def main():
 
     train_loader, val_loader = build_loaders(
         X_train, y_train, X_val, y_val, cfg.train.batch_size,
+        word_dropout=cfg.train.word_dropout,
     )
 
     # ---- Model ----
@@ -149,7 +157,10 @@ def main():
     model = LSTMClassifier(
         embedding=vocab.embedding_matrix,
         hidden_dim=mc.hidden_dim, num_layers=mc.num_layers,
-        dropout=mc.dropout, bidirectional=mc.bidirectional,
+        dropout=mc.dropout,
+        embed_dropout=mc.embed_dropout,
+        embed_noise_std=mc.embed_noise_std,
+        bidirectional=mc.bidirectional,
         fix_embedding=mc.fix_embedding, pool=mc.pool,
     ).to(device)
 
@@ -190,13 +201,18 @@ def main():
             )
             pseudo_added.append(int(len(idx)))
 
-            merged = PseudoLabeledDataset(X_train, y_train, pseudo_X, pseudo_y_t)
+            merged = PseudoLabeledDataset(
+                X_train, y_train, pseudo_X, pseudo_y_t,
+                word_dropout=cfg.train.word_dropout,
+            )
             tr_loader = DataLoader(merged, batch_size=cfg.train.batch_size, shuffle=True, num_workers=0)
 
             best_r = train(
                 model, tr_loader, val_loader, cfg.train, device,
                 ckpt_path=ckpt, logger=logger,
-                epochs_override=st.finetune_epochs, tag=f"self-train-r{r}",
+                epochs_override=st.finetune_epochs,
+                lr_override=st.finetune_lr,
+                tag=f"self-train-r{r}",
             )
             # Reload best checkpoint in case this round regressed
             state = torch.load(ckpt, map_location=device)

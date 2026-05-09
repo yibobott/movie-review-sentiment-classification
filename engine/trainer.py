@@ -6,10 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import math
+
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from engine.ema import ModelEMA
 from utils.config import TrainConfig
 
 
@@ -20,15 +23,31 @@ class BestMetrics:
     stopped_at: int = -1
 
 
-def _make_scheduler(optimizer: torch.optim.Optimizer, cfg: TrainConfig, steps_per_epoch: int):
+def _make_scheduler(
+    optimizer: torch.optim.Optimizer,
+    cfg: TrainConfig,
+    steps_per_epoch: int,
+    epochs: int,
+):
     if cfg.lr_scheduler == "plateau":
         return torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="max", factor=cfg.lr_factor, patience=cfg.lr_patience
         )
     if cfg.lr_scheduler == "cosine":
         return torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=max(1, cfg.epochs * steps_per_epoch)
+            optimizer, T_max=max(1, epochs * steps_per_epoch)
         )
+    if cfg.lr_scheduler == "warmup_cosine":
+        total = max(1, epochs * steps_per_epoch)
+        warmup = max(1, int(total * max(0.0, cfg.warmup_ratio)))
+
+        def lr_lambda(step: int) -> float:
+            if step < warmup:
+                return step / max(1, warmup)
+            progress = (step - warmup) / max(1, total - warmup)
+            return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     return None
 
 
@@ -40,7 +59,8 @@ def train_one_epoch(
     device: torch.device,
     grad_clip: float,
     scheduler=None,
-    cosine_step: bool = False,
+    per_step_sched: bool = False,
+    ema: ModelEMA | None = None,
 ) -> tuple[float, float]:
     model.train()
     total_loss = 0.0
@@ -56,8 +76,10 @@ def train_one_epoch(
         if grad_clip and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
-        if cosine_step and scheduler is not None:
+        if per_step_sched and scheduler is not None:
             scheduler.step()
+        if ema is not None:
+            ema.update(model)
         with torch.no_grad():
             preds = (torch.sigmoid(logits) >= 0.5).long()
             total_correct += (preds == y.long()).sum().item()
@@ -94,46 +116,67 @@ def train(
     ckpt_path: str | Path,
     logger: logging.Logger,
     epochs_override: Optional[int] = None,
+    lr_override: Optional[float] = None,
     tag: str = "init",
 ) -> BestMetrics:
     epochs = epochs_override if epochs_override is not None else cfg.epochs
+    lr = lr_override if lr_override is not None else cfg.lr
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=cfg.lr, weight_decay=cfg.weight_decay,
+        lr=lr, weight_decay=cfg.weight_decay,
     )
-    scheduler = _make_scheduler(optimizer, cfg, len(train_loader))
-    cosine_step = cfg.lr_scheduler == "cosine"
+    scheduler = _make_scheduler(optimizer, cfg, len(train_loader), epochs)
+    per_step_sched = cfg.lr_scheduler in ("cosine", "warmup_cosine")
+
+    ema = ModelEMA(model, decay=cfg.ema_decay) if cfg.ema_decay and cfg.ema_decay > 0 else None
 
     best = BestMetrics()
     patience = 0
 
-    logger.info(f"[{tag}] start training: epochs={epochs}, steps/epoch={len(train_loader)}, "
-                f"params_trainable={sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+    logger.info(
+        f"[{tag}] start training: epochs={epochs}, lr={lr:.2e}, steps/epoch={len(train_loader)}, "
+        f"ema={'on' if ema else 'off'}, "
+        f"params_trainable={sum(p.numel() for p in model.parameters() if p.requires_grad)}"
+    )
+
+    # Shadow model used for EMA-based validation; same architecture as `model`.
+    shadow_model = None
+    if ema is not None:
+        import copy
+        shadow_model = copy.deepcopy(model).to(device)
 
     for epoch in range(1, epochs + 1):
         tr_loss, tr_acc = train_one_epoch(
             model, train_loader, optimizer, criterion, device,
-            cfg.grad_clip, scheduler=scheduler, cosine_step=cosine_step,
+            cfg.grad_clip, scheduler=scheduler, per_step_sched=per_step_sched, ema=ema,
         )
         val_loss, val_acc = valid_one_epoch(model, val_loader, criterion, device)
+        ema_val_acc = None
+        if ema is not None:
+            ema.copy_to(shadow_model)
+            _, ema_val_acc = valid_one_epoch(shadow_model, val_loader, criterion, device)
         lr_now = optimizer.param_groups[0]["lr"]
+        ema_str = f" | ema val acc {ema_val_acc*100:.2f}" if ema_val_acc is not None else ""
         logger.info(
             f"[{tag}] epoch {epoch:02d}/{epochs} | lr {lr_now:.2e} | "
             f"train loss {tr_loss:.4f} acc {tr_acc*100:.2f} | "
-            f"val loss {val_loss:.4f} acc {val_acc*100:.2f}"
+            f"val loss {val_loss:.4f} acc {val_acc*100:.2f}{ema_str}"
         )
 
         if cfg.lr_scheduler == "plateau" and scheduler is not None:
             scheduler.step(val_acc)
 
-        if val_acc > best.best_val_acc:
-            best.best_val_acc = val_acc
+        # Use EMA val acc when available for checkpoint selection.
+        eff_val = ema_val_acc if ema_val_acc is not None else val_acc
+        eff_state = shadow_model.state_dict() if ema_val_acc is not None else model.state_dict()
+
+        if eff_val > best.best_val_acc:
+            best.best_val_acc = eff_val
             best.best_epoch = epoch
             patience = 0
-            torch.save({"model_state": model.state_dict(), "val_acc": val_acc},
-                       str(ckpt_path))
-            logger.info(f"[{tag}]   ↳ new best val acc {val_acc*100:.2f}, ckpt saved")
+            torch.save({"model_state": eff_state, "val_acc": eff_val}, str(ckpt_path))
+            logger.info(f"[{tag}]   ↘ new best val acc {eff_val*100:.2f}, ckpt saved")
         else:
             patience += 1
             if patience >= cfg.early_stop_patience:

@@ -33,6 +33,8 @@ class LSTMClassifier(nn.Module):
         hidden_dim: int = 192,
         num_layers: int = 2,
         dropout: float = 0.4,
+        embed_dropout: float = 0.3,
+        embed_noise_std: float = 0.0,
         bidirectional: bool = True,
         fix_embedding: bool = False,
         pad_idx: int = 0,
@@ -42,13 +44,14 @@ class LSTMClassifier(nn.Module):
         vocab_size, embed_dim = embedding.size()
         self.pad_idx = pad_idx
         self.pool_type = pool
+        self.embed_noise_std = float(embed_noise_std)
 
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=pad_idx)
         with torch.no_grad():
             self.embedding.weight.copy_(embedding)
         self.embedding.weight.requires_grad = not fix_embedding
 
-        self.embed_dropout = nn.Dropout(dropout)
+        self.embed_dropout = nn.Dropout(embed_dropout)
 
         self.lstm = nn.LSTM(
             input_size=embed_dim,
@@ -64,9 +67,10 @@ class LSTMClassifier(nn.Module):
 
         n_pools = sum(p in pool for p in ("attn", "max", "mean"))
         fc_in = out_dim * n_pools
+        self.feat_norm = nn.LayerNorm(fc_in)
         self.classifier = nn.Sequential(
             nn.Linear(fc_in, hidden_dim),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
@@ -74,6 +78,8 @@ class LSTMClassifier(nn.Module):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         mask = (inputs != self.pad_idx)  # (B, T)
         x = self.embedding(inputs)
+        if self.training and self.embed_noise_std > 0:
+            x = x + torch.randn_like(x) * self.embed_noise_std
         x = self.embed_dropout(x)
         x, _ = self.lstm(x)
         # Apply mask so pads don't influence pooling
@@ -88,5 +94,6 @@ class LSTMClassifier(nn.Module):
             lengths = mask_f.sum(dim=1).clamp_min(1.0)
             pools.append((x * mask_f).sum(dim=1) / lengths)
         feat = torch.cat(pools, dim=-1) if len(pools) > 1 else pools[0]
+        feat = self.feat_norm(feat)
         logit = self.classifier(feat).squeeze(-1)
         return logit

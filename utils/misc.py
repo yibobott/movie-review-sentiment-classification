@@ -10,8 +10,14 @@ from typing import List
 import numpy as np
 import torch
 
-_TOKEN_RE = re.compile(r"\w+|[^\w\s]")
+# Keep contractions like don't / it's as single tokens so that negation / possessives
+# are preserved. Collapse runs of the same emphatic punctuation (!!! -> !!!) into a
+# single token so our vocab doesn't fragment on stylistic variation.
+_TOKEN_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?|[!?]+|[.,;:]")
 _BR_RE = re.compile(r"<\s*br\s*/?\s*>", flags=re.IGNORECASE)
+_HTML_RE = re.compile(r"<[^>]+>")
+_URL_RE = re.compile(r"https?://\S+|www\.\S+")
+_REPEAT_CHAR_RE = re.compile(r"(.)\1{2,}")  # loooove -> looove
 
 
 def set_seed(seed: int) -> None:
@@ -26,8 +32,11 @@ def tokenize(text: str, lowercase: bool = True) -> List[str]:
     if not isinstance(text, str):
         text = str(text)
     text = _BR_RE.sub(" ", text)
+    text = _HTML_RE.sub(" ", text)
+    text = _URL_RE.sub(" ", text)
     if lowercase:
         text = text.lower()
+    text = _REPEAT_CHAR_RE.sub(r"\1\1\1", text)
     return _TOKEN_RE.findall(text)
 
 

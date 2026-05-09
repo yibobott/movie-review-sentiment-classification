@@ -27,12 +27,14 @@ class PreprocessConfig:
     sen_len: int = 200
     lowercase: bool = True
     min_count: int = 3
+    head_ratio: float = 1.0              # 1.0 = head-only; <1.0 enables head+tail truncation
     w2v_vector_size: int = 256
     w2v_window: int = 5
     w2v_epochs: int = 10
     w2v_sg: int = 1
     w2v_negative: int = 10
     w2v_workers: int = 8
+    w2v_sample: float = 1e-4              # gensim subsampling of frequent words
     w2v_cache_path: Optional[str] = None
 
 
@@ -41,6 +43,8 @@ class ModelConfig:
     hidden_dim: int = 192
     num_layers: int = 2
     dropout: float = 0.4
+    embed_dropout: float = 0.3
+    embed_noise_std: float = 0.0
     bidirectional: bool = True
     fix_embedding: bool = False
     pool: str = "attn_max_mean"
@@ -55,9 +59,12 @@ class TrainConfig:
     grad_clip: float = 1.0
     val_ratio: float = 0.1
     early_stop_patience: int = 3
-    lr_scheduler: str = "plateau"
+    lr_scheduler: str = "plateau"           # plateau | cosine | warmup_cosine | none
     lr_factor: float = 0.5
     lr_patience: int = 1
+    warmup_ratio: float = 0.05
+    ema_decay: float = 0.0                   # 0 disables EMA
+    word_dropout: float = 0.0                # augmentation during training
 
 
 @dataclass
@@ -68,6 +75,7 @@ class SelfTrainingConfig:
     neg_threshold: float = 0.1
     max_pseudo_per_round: int = 30000
     finetune_epochs: int = 6
+    finetune_lr: Optional[float] = None      # defaults to train.lr when None
 
 
 @dataclass

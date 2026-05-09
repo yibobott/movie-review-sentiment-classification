@@ -64,12 +64,14 @@ def train_word2vec(
     sg: int,
     negative: int,
     epochs: int,
+    sample: float = 1e-4,
     logger: Optional[logging.Logger] = None,
 ) -> Word2Vec:
     if logger:
         logger.info(
             f"Training Word2Vec: size={vector_size}, window={window}, min_count={min_count}, "
-            f"sg={sg}, negative={negative}, epochs={epochs}, sentences={len(corpus)}"
+            f"sg={sg}, negative={negative}, epochs={epochs}, sample={sample}, "
+            f"sentences={len(corpus)}"
         )
     model = Word2Vec(
         sentences=list(corpus),
@@ -80,6 +82,7 @@ def train_word2vec(
         sg=sg,
         negative=negative,
         epochs=epochs,
+        sample=sample,
     )
     return model
 
@@ -110,11 +113,28 @@ class Vocab:
     def __len__(self) -> int:
         return len(self.idx2word)
 
-    def encode(self, sentences: Sequence[Sequence[str]], sen_len: int) -> torch.Tensor:
+    def encode(
+        self,
+        sentences: Sequence[Sequence[str]],
+        sen_len: int,
+        head_ratio: float = 1.0,
+    ) -> torch.Tensor:
+        """Encode to fixed length.
+
+        When a review is longer than ``sen_len``, keep ``head_ratio`` portion
+        from the start and the remainder from the end. Reviews often put the
+        verdict in the last sentences, so preserving the tail helps.
+        """
         unk = UNK_IDX
         pad = PAD_IDX
+        head_n = max(0, min(sen_len, int(round(sen_len * head_ratio))))
+        tail_n = sen_len - head_n
         arr = np.full((len(sentences), sen_len), pad, dtype=np.int64)
         for i, tokens in enumerate(sentences):
-            ids = [self.word2idx.get(w, unk) for w in tokens[:sen_len]]
+            if len(tokens) > sen_len and tail_n > 0:
+                kept = list(tokens[:head_n]) + list(tokens[-tail_n:])
+            else:
+                kept = list(tokens[:sen_len])
+            ids = [self.word2idx.get(w, unk) for w in kept]
             arr[i, : len(ids)] = ids
         return torch.from_numpy(arr)
