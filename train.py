@@ -251,6 +251,11 @@ def main():
             )
             tr_loader = DataLoader(merged, batch_size=cfg.train.batch_size, shuffle=True, num_workers=0)
 
+            # Always start each fine-tune round from the current global best,
+            # so a regressed previous round cannot poison the next round's init.
+            state = torch.load(ckpt, map_location=device)
+            model.load_state_dict(state["model_state"])
+
             round_ckpt = run_dir / f"ckpt_self_train_r{r}.pt"
             best_r = train(
                 model, tr_loader, val_loader, cfg.train, device,
