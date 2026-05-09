@@ -34,7 +34,7 @@ from data.preprocess import (  # noqa: E402
 )
 from data.datasets import PseudoLabeledDataset, SenDataset  # noqa: E402
 from models.lstm import LSTMClassifier  # noqa: E402
-from engine.trainer import train  # noqa: E402
+from engine.trainer import train, raw_ckpt_path  # noqa: E402
 from engine.inference import predict_probs, save_predictions  # noqa: E402
 from gensim.models import Word2Vec  # noqa: E402
 
@@ -237,12 +237,23 @@ def main():
             if len(idx) == 0:
                 logger.info(f"[self-train r{r}] no confident samples, stop")
                 break
+            n_pos = int(pseudo_y.sum())
+            n_neg = len(idx) - n_pos
+            # Imbalance circuit breaker: if one class is empty (or <10% of the other),
+            # the model's logit distribution has drifted. Continuing would amplify the
+            # bias via a feedback loop (seen in run 20260510_024824 r2 -> pos=0).
+            if n_pos == 0 or n_neg == 0 or min(n_pos, n_neg) * 10 < max(n_pos, n_neg):
+                logger.info(
+                    f"[self-train r{r}] pseudo class imbalance (pos={n_pos}, neg={n_neg}); "
+                    f"stop self-training to avoid feedback loop"
+                )
+                break
             chosen_global = remaining[idx]
             pseudo_X = X_unlabel[chosen_global]
             pseudo_y_t = torch.from_numpy(pseudo_y)
             logger.info(
                 f"[self-train r{r}] added {len(idx)} pseudo "
-                f"(pos={int(pseudo_y.sum())}, neg={len(idx) - int(pseudo_y.sum())}) "
+                f"(pos={n_pos}, neg={n_neg}) "
                 f"from {len(remaining)} candidates"
             )
             pseudo_added.append(int(len(idx)))
@@ -266,21 +277,46 @@ def main():
                 lr_override=st.finetune_lr,
                 tag=f"self-train-r{r}",
             )
-            if best_r.best_val_acc > best.best_val_acc:
+            # Promote EMA-best and raw-best independently. The two tracks are
+            # decided post-hoc on Kaggle, so we should not let one regressed
+            # round overwrite a healthier checkpoint on the *other* track.
+            round_raw_ckpt = raw_ckpt_path(round_ckpt)
+            if best_r.best_ema_acc > best.best_ema_acc:
                 shutil.copyfile(round_ckpt, ckpt)
-                best.best_val_acc = best_r.best_val_acc
-                best.best_epoch = best_r.best_epoch
+                best.best_ema_acc = best_r.best_ema_acc
+                best.best_ema_epoch = best_r.best_ema_epoch
                 logger.info(
-                    f"[self-train-r{r}] promoted to global best "
-                    f"({best.best_val_acc*100:.2f})"
+                    f"[self-train-r{r}] EMA promoted to global best "
+                    f"({best.best_ema_acc*100:.2f})"
                 )
             else:
                 logger.info(
-                    f"[self-train-r{r}] kept previous global best "
-                    f"({best.best_val_acc*100:.2f}); round best was "
-                    f"{best_r.best_val_acc*100:.2f}"
+                    f"[self-train-r{r}] EMA kept previous global best "
+                    f"({best.best_ema_acc*100:.2f}); round best was "
+                    f"{best_r.best_ema_acc*100:.2f}"
                 )
-            # Reload global best so later rounds and inference cannot use a regressed checkpoint.
+            if best_r.best_raw_acc > best.best_raw_acc and round_raw_ckpt.exists():
+                shutil.copyfile(round_raw_ckpt, raw_ckpt_path(ckpt))
+                best.best_raw_acc = best_r.best_raw_acc
+                best.best_raw_epoch = best_r.best_raw_epoch
+                logger.info(
+                    f"[self-train-r{r}] RAW promoted to global best "
+                    f"({best.best_raw_acc*100:.2f})"
+                )
+            else:
+                logger.info(
+                    f"[self-train-r{r}] RAW kept previous global best "
+                    f"({best.best_raw_acc*100:.2f}); round best was "
+                    f"{best_r.best_raw_acc*100:.2f}"
+                )
+            # Aggregate for legacy summary.
+            if best.best_ema_acc >= best.best_raw_acc:
+                best.best_val_acc = best.best_ema_acc
+                best.best_epoch = best.best_ema_epoch
+            else:
+                best.best_val_acc = best.best_raw_acc
+                best.best_epoch = best.best_raw_epoch
+            # Reload global EMA-best so later rounds train from the most stable init.
             state = torch.load(ckpt, map_location=device)
             model.load_state_dict(state["model_state"])
 
@@ -288,21 +324,45 @@ def main():
             mask[idx] = False
             remaining = remaining[mask]
 
-    logger.info(f"FINAL best val acc: {best.best_val_acc*100:.2f}")
+    logger.info(
+        f"FINAL best val acc: {best.best_val_acc*100:.2f} "
+        f"(ema {best.best_ema_acc*100:.2f}, raw {best.best_raw_acc*100:.2f})"
+    )
 
     # ---- Inference ----
+    # Save TWO submissions: one from EMA-best, one from raw-best. We pick the
+    # better one on Kaggle (val acc is biased; we don't know a priori which
+    # track generalizes better). predict.csv defaults to EMA.
     test_loader = DataLoader(SenDataset(X_test), batch_size=cfg.inference.batch_size,
                              shuffle=False, num_workers=0)
-    probs = predict_probs(model, test_loader, device)
-    save_predictions(test_ids, probs, run_dir / "predict.csv", logger=logger)
 
-    # Also save raw probabilities for analysis
-    np.save(run_dir / "test_probs.npy", probs)
+    # EMA-best inference
+    state = torch.load(ckpt, map_location=device)
+    model.load_state_dict(state["model_state"])
+    probs_ema = predict_probs(model, test_loader, device)
+    save_predictions(test_ids, probs_ema, run_dir / "predict.csv", logger=logger)
+    save_predictions(test_ids, probs_ema, run_dir / "predict_ema.csv", logger=logger)
+    np.save(run_dir / "test_probs_ema.npy", probs_ema)
+
+    # Raw-best inference (if a separate raw ckpt exists)
+    raw_ckpt = raw_ckpt_path(ckpt)
+    if raw_ckpt.exists():
+        state = torch.load(raw_ckpt, map_location=device)
+        model.load_state_dict(state["model_state"])
+        probs_raw = predict_probs(model, test_loader, device)
+        save_predictions(test_ids, probs_raw, run_dir / "predict_raw.csv", logger=logger)
+        np.save(run_dir / "test_probs_raw.npy", probs_raw)
+    else:
+        logger.info("raw-best ckpt not found; skipping predict_raw.csv")
 
     # Summary
     with open(run_dir / "summary.txt", "w", encoding="utf-8") as f:
         f.write(f"best_val_acc: {best.best_val_acc:.4f}\n")
         f.write(f"best_epoch: {best.best_epoch}\n")
+        f.write(f"best_ema_acc: {best.best_ema_acc:.4f}\n")
+        f.write(f"best_ema_epoch: {best.best_ema_epoch}\n")
+        f.write(f"best_raw_acc: {best.best_raw_acc:.4f}\n")
+        f.write(f"best_raw_epoch: {best.best_raw_epoch}\n")
         f.write(f"pseudo_added_per_round: {pseudo_added}\n")
         f.write(f"git_sha: {sha}\n")
     logger.info(f"done. artifacts at {run_dir}")

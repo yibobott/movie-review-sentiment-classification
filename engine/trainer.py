@@ -18,9 +18,22 @@ from utils.config import TrainConfig
 
 @dataclass
 class BestMetrics:
+    # ``best_val_acc`` mirrors max(ema_best, raw_best) for backward compatibility
+    # with downstream code that only reads a single number. The two tracks are
+    # also kept separately so we can save / promote two independent checkpoints.
     best_val_acc: float = 0.0
     best_epoch: int = -1
     stopped_at: int = -1
+    best_ema_acc: float = 0.0
+    best_ema_epoch: int = -1
+    best_raw_acc: float = 0.0
+    best_raw_epoch: int = -1
+
+
+def raw_ckpt_path(ckpt_path: str | Path) -> Path:
+    """Companion path for the raw-weights checkpoint (sibling of EMA ckpt)."""
+    p = Path(ckpt_path)
+    return p.with_suffix(".raw" + p.suffix)
 
 
 def _make_scheduler(
@@ -175,27 +188,62 @@ def train(
         if cfg.lr_scheduler == "plateau" and scheduler is not None:
             scheduler.step(val_acc)
 
-        # Pick the better of EMA and raw weights for the checkpoint. EMA needs
-        # a few epochs to warm up (shadow starts at random init), so during
-        # `ema_warmup_epochs` we always trust the raw weights.
-        use_ema = (
+        # Track EMA-best and raw-best independently. We do not know a priori
+        # which one will rank better on Kaggle (val acc is biased), so we save
+        # both: ckpt_path holds the EMA-best, raw_ckpt holds the raw-best.
+        # When EMA is disabled (no shadow), the EMA slot mirrors raw so the
+        # primary ckpt_path remains usable.
+        raw_ckpt = raw_ckpt_path(ckpt_path)
+        improved = False
+
+        if val_acc > best.best_raw_acc:
+            best.best_raw_acc = val_acc
+            best.best_raw_epoch = epoch
+            torch.save(
+                {"model_state": model.state_dict(), "val_acc": val_acc},
+                str(raw_ckpt),
+            )
+            logger.info(
+                f"[{tag}]   ↘ new best RAW val acc {val_acc*100:.2f}, "
+                f"ckpt -> {Path(raw_ckpt).name}"
+            )
+            improved = True
+
+        ema_eligible = (
             ema_val_acc is not None
             and epoch > cfg.ema_warmup_epochs
-            and ema_val_acc >= val_acc
         )
-        if use_ema:
-            eff_val = ema_val_acc
-            eff_state = shadow_model.state_dict()
-        else:
-            eff_val = val_acc
-            eff_state = model.state_dict()
+        if ema_eligible and ema_val_acc > best.best_ema_acc:
+            best.best_ema_acc = ema_val_acc
+            best.best_ema_epoch = epoch
+            torch.save(
+                {"model_state": shadow_model.state_dict(), "val_acc": ema_val_acc},
+                str(ckpt_path),
+            )
+            logger.info(
+                f"[{tag}]   ↘ new best EMA val acc {ema_val_acc*100:.2f}, "
+                f"ckpt -> {Path(ckpt_path).name}"
+            )
+            improved = True
 
-        if eff_val > best.best_val_acc:
-            best.best_val_acc = eff_val
-            best.best_epoch = epoch
+        # If EMA is disabled, mirror raw-best into the primary ckpt_path so
+        # downstream code that always reads ckpt_path still works.
+        if ema is None and val_acc > 0 and best.best_raw_acc == val_acc and improved:
+            torch.save(
+                {"model_state": model.state_dict(), "val_acc": val_acc},
+                str(ckpt_path),
+            )
+
+        # Aggregate metrics: best_val_acc = max(ema, raw) for legacy callers.
+        if best.best_ema_acc >= best.best_raw_acc:
+            best.best_val_acc = best.best_ema_acc
+            best.best_epoch = best.best_ema_epoch
+        else:
+            best.best_val_acc = best.best_raw_acc
+            best.best_epoch = best.best_raw_epoch
+
+        if improved:
             patience = 0
-            torch.save({"model_state": eff_state, "val_acc": eff_val}, str(ckpt_path))
-            logger.info(f"[{tag}]   ↘ new best val acc {eff_val*100:.2f}, ckpt saved")
         else:
             patience += 1
             if patience >= cfg.early_stop_patience:
@@ -203,5 +251,9 @@ def train(
                 logger.info(f"[{tag}] early stop at epoch {epoch}")
                 break
 
-    logger.info(f"[{tag}] best val acc {best.best_val_acc*100:.2f} @ epoch {best.best_epoch}")
+    logger.info(
+        f"[{tag}] best val acc {best.best_val_acc*100:.2f} @ epoch {best.best_epoch} "
+        f"| ema-best {best.best_ema_acc*100:.2f} @ {best.best_ema_epoch} "
+        f"| raw-best {best.best_raw_acc*100:.2f} @ {best.best_raw_epoch}"
+    )
     return best
