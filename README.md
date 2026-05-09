@@ -6,7 +6,7 @@ on the HW4 movie-review sentiment task. Complies with `HW4-Rules.md`:
 - Single LSTM-like model (no transformers / nltk / other pre-trained NLP pkgs)
 - No ensemble (one model, best checkpoint on validation)
 - Uses unlabeled data via **Self-Training** (encouraged by rules)
-- Only stdlib + torch + numpy + pandas + sklearn + gensim + pyyaml
+- Only stdlib + torch + numpy + pandas + gensim + pyyaml
 
 ## Structure
 
@@ -87,7 +87,7 @@ to diff hyperparameters across experiments.
 | Optimizer | SGD lr=1e-3, 2 epoch | **AdamW** lr=8e-4, up to 20 epoch + early stop |
 | LR schedule | none | **warmup + cosine** (6% warmup) |
 | Loss | BCELoss + Sigmoid in model | **BCEWithLogitsLoss** (numerically stable) |
-| Split | first 13k for train (unstratified) | 90/10 **stratified** on 25k |
+| Split | first 13k for train (unstratified) | 90/10 dependency-free **stratified** split on 25k |
 | sen_len | 30 | **400** with **head+tail truncation** (keep 30% head / 70% tail) |
 | Tokenize | raw regex | lowercase + strip `<br />`/HTML/URL, preserve contractions (`don't`), collapse `!!!` / `loooove` |
 | Embedding | fixed w2v CBOW, vector=250 | **skip-gram + negative + subsampling**, vector=300, fine-tuned |

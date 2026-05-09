@@ -21,7 +21,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parent
@@ -50,6 +49,24 @@ def build_loaders(X_train, y_train, X_val, y_val, batch_size, word_dropout: floa
         batch_size=batch_size, shuffle=False, num_workers=0,
     )
     return tr, va
+
+
+def stratified_train_val_split(labels: np.ndarray, val_ratio: float, seed: int):
+    """Small dependency-free stratified split for binary labels."""
+    rng = np.random.RandomState(seed)
+    train_parts = []
+    val_parts = []
+    for label in np.unique(labels):
+        idx = np.where(labels == label)[0]
+        rng.shuffle(idx)
+        n_val = max(1, int(round(len(idx) * val_ratio)))
+        val_parts.append(idx[:n_val])
+        train_parts.append(idx[n_val:])
+    train_idx = np.concatenate(train_parts)
+    val_idx = np.concatenate(val_parts)
+    rng.shuffle(train_idx)
+    rng.shuffle(val_idx)
+    return train_idx, val_idx
 
 
 def pick_pseudo(
@@ -168,10 +185,7 @@ def main():
     X_unlabel = vocab.encode(unlabel_tokens, pp.sen_len, head_ratio=pp.head_ratio)
 
     # ---- Split ----
-    tr_idx, va_idx = train_test_split(
-        np.arange(len(X_all)), test_size=cfg.train.val_ratio,
-        stratify=y_all.numpy(), random_state=cfg.seed,
-    )
+    tr_idx, va_idx = stratified_train_val_split(y_all.numpy(), cfg.train.val_ratio, cfg.seed)
     X_train, y_train = X_all[tr_idx], y_all[tr_idx]
     X_val, y_val = X_all[va_idx], y_all[va_idx]
     logger.info(f"train={len(X_train)}, val={len(X_val)} (stratified)")
@@ -237,17 +251,31 @@ def main():
             )
             tr_loader = DataLoader(merged, batch_size=cfg.train.batch_size, shuffle=True, num_workers=0)
 
+            round_ckpt = run_dir / f"ckpt_self_train_r{r}.pt"
             best_r = train(
                 model, tr_loader, val_loader, cfg.train, device,
-                ckpt_path=ckpt, logger=logger,
+                ckpt_path=round_ckpt, logger=logger,
                 epochs_override=st.finetune_epochs,
                 lr_override=st.finetune_lr,
                 tag=f"self-train-r{r}",
             )
-            # Reload best checkpoint in case this round regressed
+            if best_r.best_val_acc > best.best_val_acc:
+                shutil.copyfile(round_ckpt, ckpt)
+                best.best_val_acc = best_r.best_val_acc
+                best.best_epoch = best_r.best_epoch
+                logger.info(
+                    f"[self-train-r{r}] promoted to global best "
+                    f"({best.best_val_acc*100:.2f})"
+                )
+            else:
+                logger.info(
+                    f"[self-train-r{r}] kept previous global best "
+                    f"({best.best_val_acc*100:.2f}); round best was "
+                    f"{best_r.best_val_acc*100:.2f}"
+                )
+            # Reload global best so later rounds and inference cannot use a regressed checkpoint.
             state = torch.load(ckpt, map_location=device)
             model.load_state_dict(state["model_state"])
-            best.best_val_acc = max(best.best_val_acc, best_r.best_val_acc)
 
             mask = np.ones(len(remaining), dtype=bool)
             mask[idx] = False
