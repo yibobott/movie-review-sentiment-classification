@@ -3,10 +3,10 @@
 Single BiLSTM-based model (LSTM-like, self-designed) targeting val acc > 0.903
 on the HW4 movie-review sentiment task. Complies with `HW4-Rules.md`:
 
-- ✅ Single LSTM-like model (no transformers / nltk / other pre-trained NLP pkgs)
-- ✅ No ensemble (one model, best checkpoint on validation)
-- ✅ Uses unlabeled data via **Self-Training** (encouraged by rules)
-- ✅ Only stdlib + torch + numpy + pandas + sklearn + gensim + pyyaml
+- Single LSTM-like model (no transformers / nltk / other pre-trained NLP pkgs)
+- No ensemble (one model, best checkpoint on validation)
+- Uses unlabeled data via **Self-Training** (encouraged by rules)
+- Only stdlib + torch + numpy + pandas + sklearn + gensim + pyyaml
 
 ## Structure
 
