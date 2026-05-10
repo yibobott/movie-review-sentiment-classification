@@ -38,7 +38,7 @@ model:
 
 train:
   batch_size: 64
-  epochs: 20                   # A2: 30->20, prev early-stop at 24 w/ plateau after ep 14 (wasted compute)
+  epochs: 23                   # v3: 20->23 (RUN 235337 phase B was truncated to 17 ep, cosine hit 0 while train acc still rising at 88.9)
   lr: 5.0e-4                   # B: lower init lr to slow down overfitting
   weight_decay: 3.0e-4         # A2: 1e-4->3e-4, stronger decoupled weight decay (AdamW)
   grad_clip: 1.0
@@ -55,13 +55,13 @@ train:
   # Discriminative LR — only takes effect when an LM ckpt is loaded.
   # Safe to leave on: it is a no-op when no LM is loaded (single-LR fallback).
   use_discriminative_lr: true
-  lr_embedding: 5.0e-5         # v2: 1e-5->5e-5 (RUN 231016 init train acc plateaued at 86, body underfit)
+  lr_embedding: 1.0e-4         # v3: 5e-5->1e-4 (RUN 235337 train acc 88.9 < val 91.5, embedding underfit; embed=22M params dominates)
   lr_lstm: 3.0e-4              # v2: 1e-4->3e-4 (same reason)
   lr_head: 5.0e-4              # full update for randomly-initialized attn + classifier head
   # Gradual unfreezing (ULMFiT-style). Phase A: head-only warmup with frozen body
   # for K epochs at lr_head_warmup; Phase B: unfreeze + disc-LR for the remaining
   # (epochs - K) epochs. No-op unless LM is loaded and use_discriminative_lr=true.
-  freeze_body_epochs: 3        # K epochs of head-only warmup
+  freeze_body_epochs: 2        # v3: 3->2 (RUN 235337 phase A epoch 3 produced no new best; epoch 2 already at 88.61)
   lr_head_warmup: 1.0e-3       # higher LR for head while body is frozen
 
 lm:
