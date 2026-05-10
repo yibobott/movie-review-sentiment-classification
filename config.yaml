@@ -65,8 +65,8 @@ lm:
   ckpt_path: null              # e.g. ./results_lm/<ts>/lm_ckpt.pt
   hidden_dim: 192              # MUST match model.hidden_dim
   num_layers: 2                # MUST match model.num_layers
-  embed_dropout: 0.3
-  dropout: 0.4
+  embed_dropout: 0.2          # v2: 0.3->0.2, v1 train PPL 146 > val PPL 122 suggests over-regularization
+  dropout: 0.3                # v2: 0.4->0.3, same reason
   tie_weights: true
   init_from_w2v: true
   bptt_len: 128
@@ -75,12 +75,12 @@ lm:
   include_labeled_in_train: false  # keep classifier val text entirely out of LM
   include_test_in_train: true      # transductive — test text (no labels) is fine
   batch_size: 64
-  epochs: 8
+  epochs: 16                  # v2: 8->16, v1 cosine hit lr=0 at ep8 while val ppl still dropping (124.94->122.05)
   lr: 1.0e-3
   weight_decay: 1.0e-6
   grad_clip: 0.5
   warmup_ratio: 0.05
-  early_stop_patience: 2
+  early_stop_patience: 3      # v2: 2->3, give cosine tail more patience
   seed: 42
 
 self_training:

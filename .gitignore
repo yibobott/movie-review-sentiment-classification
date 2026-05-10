@@ -12,3 +12,4 @@ sample_submission.csv
 
 # Model artifacts and checkpoints
 results/
+results_lm/
