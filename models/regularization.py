@@ -104,7 +104,13 @@ class WeightDrop(nn.Module):
             if self.training and self.p > 0.0:
                 w = nn.functional.dropout(raw, p=self.p, training=True)
             else:
-                w = raw
+                # IMPORTANT: must NOT be a Parameter. Plain ``w = raw`` would
+                # cause Module.__setattr__ to re-register ``weight_hh_l0`` in
+                # _parameters (because raw is a Parameter), and the next train
+                # step's setattr with a non-Parameter dropped tensor then
+                # raises TypeError. ``raw * 1.0`` keeps autograd to ``raw``
+                # but produces a plain Tensor.
+                w = raw * 1.0
             # install as plain attribute (NOT a Parameter) so cuDNN reads it
             setattr(self.module, name, w)
 
