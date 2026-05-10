@@ -4,6 +4,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from .regularization import LockedDropout, maybe_wrap_lstm_with_weight_drop
+
 
 class AttentionPool(nn.Module):
     """Additive attention pooling over time with masking."""
@@ -77,6 +79,8 @@ class LSTMClassifier(nn.Module):
         pad_idx: int = 0,
         pool: str = "attn_max_mean",
         attn_heads: int = 4,
+        locked_dropout: float = 0.0,
+        weight_drop: float = 0.0,
     ):
         super().__init__()
         vocab_size, embed_dim = embedding.size()
@@ -99,6 +103,11 @@ class LSTMClassifier(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0,
             bidirectional=bidirectional,
         )
+        # Optional AWD-LSTM-style DropConnect on the recurrent weights.
+        # No-op at weight_drop=0.0; otherwise wraps self.lstm in-place.
+        self.lstm = maybe_wrap_lstm_with_weight_drop(self.lstm, weight_drop)
+        # Variational dropout on the LSTM output (shared mask across time).
+        self.locked_dropout = LockedDropout(locked_dropout)
 
         out_dim = hidden_dim * (2 if bidirectional else 1)
         # Pool selection. ``mhattn`` is the multi-head learned-query pool;
@@ -131,6 +140,7 @@ class LSTMClassifier(nn.Module):
             x = x + torch.randn_like(x) * self.embed_noise_std
         x = self.embed_dropout(x)
         x, _ = self.lstm(x)
+        x = self.locked_dropout(x)
         # Apply mask so pads don't influence pooling
         mask_f = mask.unsqueeze(-1).float()
         pools = []

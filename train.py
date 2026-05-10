@@ -371,6 +371,8 @@ def main():
         bidirectional=mc.bidirectional,
         fix_embedding=mc.fix_embedding, pool=mc.pool,
         attn_heads=mc.attn_heads,
+        locked_dropout=mc.locked_dropout,
+        weight_drop=mc.weight_drop,
     ).to(device)
 
     # ---- Optional: load LM-pretrained weights before init training ----

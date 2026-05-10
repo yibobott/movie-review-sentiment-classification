@@ -49,6 +49,10 @@ class ModelConfig:
     fix_embedding: bool = False
     pool: str = "attn_max_mean"
     attn_heads: int = 4                       # # heads for mhattn pool; ignored for single-head attn
+    # AWD-LSTM-style regularizers (self-implemented in models/regularization.py).
+    # Both default 0.0 = no-op, preserving older configs and checkpoints.
+    locked_dropout: float = 0.0               # variational dropout on LSTM output (time-shared mask)
+    weight_drop: float = 0.0                  # DropConnect on LSTM weight_hh_l*
 
 
 @dataclass
@@ -108,6 +112,8 @@ class LMConfig:
     num_layers: int = 2
     embed_dropout: float = 0.3
     dropout: float = 0.4
+    locked_dropout: float = 0.0              # variational dropout on LSTM output (no-op at 0)
+    weight_drop: float = 0.0                 # DropConnect on LM LSTM weight_hh_l* (no-op at 0)
     tie_weights: bool = True                 # tie embedding <-> projection (via adapter)
     init_from_w2v: bool = True               # warm-start LM embedding from w2v matrix
     # Data

@@ -33,6 +33,35 @@ def transfer_lm_to_classifier(
 
     cs = classifier.state_dict()
 
+    # When either side (LM ckpt or classifier) wraps its LSTM with WeightDrop,
+    # the recurrent weights live under a different key:
+    #   * "_raw" suffix on dropped weights (weight_hh_l* -> weight_hh_l*_raw)
+    #   * an extra ".module." segment because WeightDrop is a submodule
+    #     (lstm.weight_ih_l0 -> lstm.module.weight_ih_l0)
+    # To keep the transfer logic below uniform, alias each such key back to
+    # its bare classical name. Writes via copy_ on the aliased tensor still
+    # mutate the underlying parameter (state_dict tensors share storage).
+    def _bare(k: str) -> str:
+        # Drop ".module." segment introduced by WeightDrop wrapper.
+        k = k.replace(".module.", ".")
+        # Drop trailing "_raw" suffix on dropped recurrent weights.
+        if k.endswith("_raw"):
+            k = k[: -len("_raw")]
+        return k
+
+    aliased_in_cs: List[str] = []  # bare names we added to cs (must strip before load)
+    for k in list(cs.keys()):
+        bare = _bare(k)
+        if bare != k and bare not in cs:
+            cs[bare] = cs[k]
+            aliased_in_cs.append(bare)
+    # Same for the LM side (read-only; safe to add bare aliases).
+    lm_state = dict(lm_state)  # shallow copy so we don't mutate caller's dict
+    for k in list(lm_state.keys()):
+        bare = _bare(k)
+        if bare != k and bare not in lm_state:
+            lm_state[bare] = lm_state[k]
+
     # ---- 1) Embedding: clip the LM EOS row ---------------------------------
     lm_emb = lm_state.get("embedding.weight")
     cls_emb = cs.get("embedding.weight")
@@ -101,6 +130,11 @@ def transfer_lm_to_classifier(
 
     # Backward direction (``*_reverse``) is left at default init in v1 — no backward LM.
 
+    # Strip the bare-name aliases we added earlier so load_state_dict doesn't
+    # complain about "unexpected keys". The underlying parameter storage was
+    # already mutated in-place via copy_ above, so this is safe.
+    for bare in aliased_in_cs:
+        cs.pop(bare, None)
     classifier.load_state_dict(cs)
     _log(logger, transferred, skipped)
     return {"transferred": transferred, "skipped": skipped}

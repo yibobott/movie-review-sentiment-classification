@@ -178,6 +178,8 @@ def main() -> None:
         tie_weights=lc.tie_weights,
         embedding_init=vocab.embedding_matrix if lc.init_from_w2v else None,
         pad_idx=PAD_IDX,
+        locked_dropout=lc.locked_dropout,
+        weight_drop=lc.weight_drop,
     ).to(device)
 
     # ---- Train ----

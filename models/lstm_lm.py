@@ -18,6 +18,8 @@ from typing import Optional
 import torch
 from torch import nn
 
+from .regularization import LockedDropout, maybe_wrap_lstm_with_weight_drop
+
 
 class LSTMLanguageModel(nn.Module):
     """Forward (causal) LSTM-LM.
@@ -39,6 +41,8 @@ class LSTMLanguageModel(nn.Module):
         tie_weights: bool = True,
         embedding_init: Optional[torch.Tensor] = None,
         pad_idx: int = 0,
+        locked_dropout: float = 0.0,
+        weight_drop: float = 0.0,
     ) -> None:
         super().__init__()
         # NOTE: ``vocab_size`` should be ``classifier_vocab_size + 1`` (extra row for EOS).
@@ -72,6 +76,11 @@ class LSTMLanguageModel(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0,
             bidirectional=False,
         )
+        # AWD-LSTM-style DropConnect on recurrent weights (no-op at 0).
+        self.lstm = maybe_wrap_lstm_with_weight_drop(self.lstm, weight_drop)
+        # Variational dropout on LSTM output (time-shared mask). When > 0,
+        # this REPLACES output_dropout below; both default to no-op at 0.
+        self.locked_dropout = LockedDropout(locked_dropout)
         self.output_dropout = nn.Dropout(dropout)
         # Adapter projects LSTM output (hidden_dim) back to embed_dim so we
         # can tie weights with the input embedding.
@@ -85,6 +94,7 @@ class LSTMLanguageModel(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         emb = self.embed_dropout(self.embedding(x))
         h, _ = self.lstm(emb)
+        h = self.locked_dropout(h)
         h = self.output_dropout(h)
         h = self.adapter(h)
         return self.proj(h)
