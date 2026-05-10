@@ -33,8 +33,8 @@ model:
   embed_noise_std: 0.20        # A2: 0.15->0.20, stronger Gaussian noise on embeddings
   bidirectional: true
   fix_embedding: false         # fine-tune embedding for better acc
-  pool: mhattn_max_mean        # D: multi-head learned-query attn pool + max + mean (HW4-compliant: no self-attn / FFN / residual)
-  attn_heads: 4                # 4 heads x 96 dim/head over BiLSTM out_dim=384 (192*2)
+  pool: attn_max_mean          # rolled back to single-head for stable baseline 92.35; multi-head kept in code for LM-era ablation
+  attn_heads: 4                # ignored when pool=attn_max_mean
 
 train:
   batch_size: 64
@@ -52,6 +52,35 @@ train:
   ema_warmup_epochs: 2         # don't pick EMA ckpt until shadow has warmed up
   word_dropout: 0.25           # A: stronger token-level dropout
   label_smoothing: 0.05        # C: soften BCE targets to reduce miscalibration / overfit
+  # Discriminative LR — only used when an LM ckpt is loaded (lm.enable=true & lm.ckpt_path set)
+  use_discriminative_lr: false # flip to true once lm.ckpt_path is wired to a trained LM
+  lr_embedding: 1.0e-5         # gentle update for LM-pretrained embedding
+  lr_lstm: 1.0e-4              # medium update for LM-pretrained LSTM body
+  lr_head: 5.0e-4              # full update for randomly-initialized attn + classifier head
+
+lm:
+  # LSTM Language-Model pretraining (see LSTM_LM_DESIGN.md)
+  enable: false                # turn on after running `python pretrain_lm.py`
+  ckpt_path: null              # e.g. ./results_lm/<ts>/lm_ckpt.pt
+  hidden_dim: 192              # MUST match model.hidden_dim
+  num_layers: 2                # MUST match model.num_layers
+  embed_dropout: 0.3
+  dropout: 0.4
+  tie_weights: true
+  init_from_w2v: true
+  bptt_len: 128
+  val_ratio: 0.05              # 5% of unlabeled docs (no labeled docs in LM val/train; design section 4.3)
+  val_source: unlabeled_only
+  include_labeled_in_train: false  # keep classifier val text entirely out of LM
+  include_test_in_train: true      # transductive — test text (no labels) is fine
+  batch_size: 64
+  epochs: 8
+  lr: 1.0e-3
+  weight_decay: 1.0e-6
+  grad_clip: 0.5
+  warmup_ratio: 0.05
+  early_stop_patience: 2
+  seed: 42
 
 self_training:
   enable: true

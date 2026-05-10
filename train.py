@@ -29,6 +29,8 @@ sys.path.insert(0, str(ROOT))
 from utils.config import Config  # noqa: E402
 from utils.logger import build_logger  # noqa: E402
 from utils.misc import git_sha, pick_device, set_seed, timestamp  # noqa: E402
+from utils.vocab_io import vocab_hash, verify_vocab  # noqa: E402
+from utils.weight_transfer import transfer_lm_to_classifier  # noqa: E402
 from data.preprocess import (  # noqa: E402
     Vocab, load_labeled_csv, load_test_csv, load_unlabeled_csv, train_word2vec,
 )
@@ -49,6 +51,117 @@ def build_loaders(X_train, y_train, X_val, y_val, batch_size, word_dropout: floa
         batch_size=batch_size, shuffle=False, num_workers=0,
     )
     return tr, va
+
+
+def maybe_load_lm_ckpt(cfg, vocab, model, logger):
+    """If lm.ckpt_path is set, validate vocab alignment and transfer weights.
+
+    Returns True if LM weights were loaded, False otherwise. Aborts (raises)
+    on any mismatch to prevent silent silent-fail from stale ckpts.
+    """
+    if not cfg.lm.enable or not cfg.lm.ckpt_path:
+        return False
+    ckpt_path = Path(cfg.lm.ckpt_path)
+    if not ckpt_path.is_absolute():
+        ckpt_path = (ROOT / ckpt_path).resolve()
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"lm.ckpt_path does not exist: {ckpt_path}")
+
+    # Locate the sibling vocab file written by pretrain_lm.py.
+    lm_run_dir = ckpt_path.parent
+    vocab_json = lm_run_dir / "idx2word.json"
+    if not vocab_json.exists():
+        raise FileNotFoundError(
+            f"idx2word.json not found next to LM ckpt ({lm_run_dir}); "
+            f"re-run pretrain_lm.py with the current code."
+        )
+
+    # 1) The cached w2v MUST point to the LM's w2v (otherwise vocabs may diverge).
+    expected_w2v = lm_run_dir / "w2v.model"
+    if cfg.preprocess.w2v_cache_path is None:
+        raise ValueError(
+            f"preprocess.w2v_cache_path is None but LM ckpt requires it to point "
+            f"at {expected_w2v} to guarantee vocab alignment."
+        )
+    cached = Path(cfg.preprocess.w2v_cache_path)
+    if not cached.is_absolute():
+        cached = (ROOT / cached).resolve()
+    if cached.resolve() != expected_w2v.resolve():
+        raise ValueError(
+            f"preprocess.w2v_cache_path={cached} differs from LM run's w2v={expected_w2v}. "
+            f"Set the former to the latter so vocabs are byte-identical."
+        )
+
+    # 2) Element-wise vocab match + hash double-check.
+    state = torch.load(ckpt_path, map_location="cpu")
+    expected_hash = state.get("vocab_hash")
+    verify_vocab(vocab.idx2word, vocab_json, expected_hash=expected_hash)
+    logger.info(
+        f"[lm-load] vocab integrity OK (hash={vocab_hash(vocab.idx2word)[:12]}\u2026, "
+        f"V_cls={len(vocab)})"
+    )
+
+    # 3) Architecture sanity.
+    if state.get("hidden_dim") and state["hidden_dim"] != cfg.model.hidden_dim:
+        raise ValueError(
+            f"LM hidden_dim={state['hidden_dim']} != classifier hidden_dim="
+            f"{cfg.model.hidden_dim}. Re-pretrain or change config."
+        )
+    if state.get("embed_dim") and state["embed_dim"] != vocab.embedding_matrix.size(1):
+        raise ValueError(
+            f"LM embed_dim={state['embed_dim']} != classifier embed_dim="
+            f"{vocab.embedding_matrix.size(1)}"
+        )
+
+    # 4) Transfer weights.
+    transfer_lm_to_classifier(state["model_state"], model, logger=logger)
+    logger.info(
+        f"[lm-load] loaded LM ckpt from {ckpt_path} "
+        f"(val_ppl={state.get('val_ppl', 'NA')}, epoch={state.get('epoch', 'NA')})"
+    )
+    return True
+
+
+def build_discriminative_optimizer(model, cfg_train, logger):
+    """Build AdamW with three LR groups: embedding / lstm / head.
+
+    The split is purely for fine-tuning *after* LM transfer: pretrained
+    parameters get a smaller LR, randomly-initialized head gets the largest.
+    """
+    head_modules = []
+    for name in ("attn", "feat_norm", "classifier"):
+        m = getattr(model, name, None)
+        if m is not None:
+            head_modules.append((name, m))
+
+    embedding_params = list(model.embedding.parameters())
+    lstm_params = list(model.lstm.parameters())
+    head_params = []
+    for _, m in head_modules:
+        head_params.extend(list(m.parameters()))
+
+    # Sanity: cover every trainable parameter exactly once.
+    seen = {id(p) for p in embedding_params + lstm_params + head_params}
+    leftover = [p for p in model.parameters() if id(p) not in seen and p.requires_grad]
+    if leftover:
+        # Fall back to lumping any unrecognized module into the head group.
+        head_params.extend(leftover)
+        logger.info(
+            f"[disc-lr] {len(leftover)} unrecognized trainable params lumped into head group"
+        )
+
+    param_groups = [
+        {"params": [p for p in embedding_params if p.requires_grad], "lr": cfg_train.lr_embedding},
+        {"params": [p for p in lstm_params      if p.requires_grad], "lr": cfg_train.lr_lstm},
+        {"params": [p for p in head_params      if p.requires_grad], "lr": cfg_train.lr_head},
+    ]
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg_train.weight_decay)
+    logger.info(
+        f"[disc-lr] embedding lr={cfg_train.lr_embedding:.1e} ({sum(p.numel() for p in embedding_params)} params), "
+        f"lstm lr={cfg_train.lr_lstm:.1e} ({sum(p.numel() for p in lstm_params)} params), "
+        f"head lr={cfg_train.lr_head:.1e} ({sum(p.numel() for p in head_params)} params)"
+    )
+    return optimizer
 
 
 def stratified_train_val_split(labels: np.ndarray, val_ratio: float, seed: int):
@@ -210,9 +323,16 @@ def main():
         attn_heads=mc.attn_heads,
     ).to(device)
 
+    # ---- Optional: load LM-pretrained weights before init training ----
+    lm_loaded = maybe_load_lm_ckpt(cfg, vocab, model, logger)
+    init_optimizer = None
+    if lm_loaded and cfg.train.use_discriminative_lr:
+        init_optimizer = build_discriminative_optimizer(model, cfg.train, logger)
+
     ckpt = run_dir / "ckpt.pt"
     best = train(model, train_loader, val_loader, cfg.train, device,
-                 ckpt_path=ckpt, logger=logger, tag="init")
+                 ckpt_path=ckpt, logger=logger, tag="init",
+                 optimizer=init_optimizer)
     # restore best
     state = torch.load(ckpt, map_location=device)
     model.load_state_dict(state["model_state"])

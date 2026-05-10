@@ -138,14 +138,17 @@ def train(
     epochs_override: Optional[int] = None,
     lr_override: Optional[float] = None,
     tag: str = "init",
+    optimizer: Optional[torch.optim.Optimizer] = None,
 ) -> BestMetrics:
     epochs = epochs_override if epochs_override is not None else cfg.epochs
     lr = lr_override if lr_override is not None else cfg.lr
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=lr, weight_decay=cfg.weight_decay,
-    )
+    if optimizer is None:
+        # Default: single LR for all trainable params (backward-compatible path).
+        optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=lr, weight_decay=cfg.weight_decay,
+        )
     scheduler = _make_scheduler(optimizer, cfg, len(train_loader), epochs)
     per_step_sched = cfg.lr_scheduler in ("cosine", "warmup_cosine")
 

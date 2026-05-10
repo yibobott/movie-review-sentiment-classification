@@ -68,6 +68,11 @@ class TrainConfig:
     ema_warmup_epochs: int = 0               # epochs to skip EMA ckpt selection while shadow warms up
     word_dropout: float = 0.0                # augmentation during training
     label_smoothing: float = 0.0             # BCE target softening epsilon
+    # Discriminative LR (only used when LM ckpt is loaded). When False, uses ``lr`` for all params.
+    use_discriminative_lr: bool = False
+    lr_embedding: float = 1.0e-5             # LM-pretrained: gentle update
+    lr_lstm: float = 1.0e-4                  # LM-pretrained: medium update
+    lr_head: float = 5.0e-4                  # randomly initialized: stronger update
 
 
 @dataclass
@@ -83,6 +88,38 @@ class SelfTrainingConfig:
 
 
 @dataclass
+class LMConfig:
+    """LSTM Language Model pretraining configuration.
+
+    See LSTM_LM_DESIGN.md for rationale of each knob.
+    """
+    enable: bool = False                     # master switch; when False, no LM loaded
+    ckpt_path: Optional[str] = None          # if set, skip pretraining and load this LM ckpt
+    # Architecture (must align with classifier for clean weight transfer)
+    hidden_dim: int = 192
+    num_layers: int = 2
+    embed_dropout: float = 0.3
+    dropout: float = 0.4
+    tie_weights: bool = True                 # tie embedding <-> projection (via adapter)
+    init_from_w2v: bool = True               # warm-start LM embedding from w2v matrix
+    # Data
+    bptt_len: int = 128
+    val_ratio: float = 0.05                  # fraction of unlabeled docs used as LM val
+    val_source: str = "unlabeled_only"       # enforce: never use labeled docs for LM val
+    include_labeled_in_train: bool = False   # §4.3 simplified isolation: keep labeled fully out of LM
+    include_test_in_train: bool = True       # transductive: test text (no labels) is fine
+    # Optimization
+    batch_size: int = 64
+    epochs: int = 8
+    lr: float = 1.0e-3
+    weight_decay: float = 1.0e-6
+    grad_clip: float = 0.5                   # LSTM-LMs gradient-explode famously easily
+    warmup_ratio: float = 0.05
+    early_stop_patience: int = 2             # on val perplexity
+    seed: int = 42
+
+
+@dataclass
 class InferenceConfig:
     batch_size: int = 256
 
@@ -95,6 +132,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     self_training: SelfTrainingConfig = field(default_factory=SelfTrainingConfig)
+    lm: LMConfig = field(default_factory=LMConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
     seed: int = 42
 
@@ -109,6 +147,7 @@ class Config:
             model=ModelConfig(**raw.get("model", {})),
             train=TrainConfig(**raw.get("train", {})),
             self_training=SelfTrainingConfig(**raw.get("self_training", {})),
+            lm=LMConfig(**raw.get("lm", {})),
             inference=InferenceConfig(**raw.get("inference", {})),
             seed=raw.get("seed", 42),
         )

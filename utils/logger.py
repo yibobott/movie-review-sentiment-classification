@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 
-def build_logger(run_dir: str | Path, name: str = "hw4") -> logging.Logger:
+def build_logger(run_dir: str | Path, name: str = "hw4",
+                 log_name: str = "train.log") -> logging.Logger:
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -21,7 +22,7 @@ def build_logger(run_dir: str | Path, name: str = "hw4") -> logging.Logger:
     sh.setFormatter(fmt)
     logger.addHandler(sh)
 
-    fh = logging.FileHandler(run_dir / "train.log", mode="w", encoding="utf-8")
+    fh = logging.FileHandler(run_dir / log_name, mode="w", encoding="utf-8")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
