@@ -555,14 +555,6 @@ def main():
     except Exception as _e:
         print(f"[done] artifacts at {run_dir}  (rename skipped: {_e})")
 
-    # Update marker so ``pretrain_lm.py --w2v latest`` can pick up this run's
-    # w2v.model in the future. Best-effort; do not fail the run on IO errors.
-    try:
-        latest_file = final_run_dir.parent / "LATEST"
-        latest_file.write_text(final_run_dir.name, encoding="utf-8")
-    except Exception as _e:
-        print(f"[warn] could not update {final_run_dir.parent / 'LATEST'}: {_e}")
-
 
 if __name__ == "__main__":
     main()
