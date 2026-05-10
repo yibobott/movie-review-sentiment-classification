@@ -53,22 +53,20 @@ def build_loaders(X_train, y_train, X_val, y_val, batch_size, word_dropout: floa
     return tr, va
 
 
-def maybe_load_lm_ckpt(cfg, vocab, model, logger):
-    """If lm.ckpt_path is set, validate vocab alignment and transfer weights.
+def maybe_load_lm_ckpt(cfg, vocab, model, logger, lm_ckpt_path: Path | None):
+    """Validate vocab alignment and transfer LM weights.
 
-    Returns True if LM weights were loaded, False otherwise. Aborts (raises)
-    on any mismatch to prevent silent silent-fail from stale ckpts.
+    ``lm_ckpt_path`` is the resolved path (from --lm or cfg.lm.ckpt_path).
+    If None, returns False (no LM). On any mismatch, raises — never silently
+    falls through, since a misaligned LM is worse than no LM.
     """
-    if not cfg.lm.enable or not cfg.lm.ckpt_path:
+    if lm_ckpt_path is None:
         return False
-    ckpt_path = Path(cfg.lm.ckpt_path)
-    if not ckpt_path.is_absolute():
-        ckpt_path = (ROOT / ckpt_path).resolve()
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"lm.ckpt_path does not exist: {ckpt_path}")
+    if not lm_ckpt_path.exists():
+        raise FileNotFoundError(f"LM ckpt does not exist: {lm_ckpt_path}")
 
     # Locate the sibling vocab file written by pretrain_lm.py.
-    lm_run_dir = ckpt_path.parent
+    lm_run_dir = lm_ckpt_path.parent
     vocab_json = lm_run_dir / "idx2word.json"
     if not vocab_json.exists():
         raise FileNotFoundError(
@@ -76,24 +74,8 @@ def maybe_load_lm_ckpt(cfg, vocab, model, logger):
             f"re-run pretrain_lm.py with the current code."
         )
 
-    # 1) The cached w2v MUST point to the LM's w2v (otherwise vocabs may diverge).
-    expected_w2v = lm_run_dir / "w2v.model"
-    if cfg.preprocess.w2v_cache_path is None:
-        raise ValueError(
-            f"preprocess.w2v_cache_path is None but LM ckpt requires it to point "
-            f"at {expected_w2v} to guarantee vocab alignment."
-        )
-    cached = Path(cfg.preprocess.w2v_cache_path)
-    if not cached.is_absolute():
-        cached = (ROOT / cached).resolve()
-    if cached.resolve() != expected_w2v.resolve():
-        raise ValueError(
-            f"preprocess.w2v_cache_path={cached} differs from LM run's w2v={expected_w2v}. "
-            f"Set the former to the latter so vocabs are byte-identical."
-        )
-
-    # 2) Element-wise vocab match + hash double-check.
-    state = torch.load(ckpt_path, map_location="cpu")
+    # Element-wise vocab match + hash double-check (defense vs silent w2v drift).
+    state = torch.load(lm_ckpt_path, map_location="cpu")
     expected_hash = state.get("vocab_hash")
     verify_vocab(vocab.idx2word, vocab_json, expected_hash=expected_hash)
     logger.info(
@@ -101,7 +83,7 @@ def maybe_load_lm_ckpt(cfg, vocab, model, logger):
         f"V_cls={len(vocab)})"
     )
 
-    # 3) Architecture sanity.
+    # Architecture sanity.
     if state.get("hidden_dim") and state["hidden_dim"] != cfg.model.hidden_dim:
         raise ValueError(
             f"LM hidden_dim={state['hidden_dim']} != classifier hidden_dim="
@@ -113,10 +95,10 @@ def maybe_load_lm_ckpt(cfg, vocab, model, logger):
             f"{vocab.embedding_matrix.size(1)}"
         )
 
-    # 4) Transfer weights.
+    # Transfer weights.
     transfer_lm_to_classifier(state["model_state"], model, logger=logger)
     logger.info(
-        f"[lm-load] loaded LM ckpt from {ckpt_path} "
+        f"[lm-load] loaded LM ckpt from {lm_ckpt_path} "
         f"(val_ppl={state.get('val_ppl', 'NA')}, epoch={state.get('epoch', 'NA')})"
     )
     return True
@@ -225,13 +207,61 @@ def pick_pseudo(
     return idx, labels
 
 
+def _resolve_lm_arg(arg: str | None) -> Path | None:
+    """Resolve --lm CLI arg to an absolute lm_ckpt.pt path.
+
+    None        -> None (use config.lm settings as-is).
+    'latest'    -> ckpt of the most recent LM run (read from results_lm/LATEST).
+    <path>      -> as-is (made absolute against ROOT if relative).
+    """
+    if arg is None:
+        return None
+    if arg == "latest":
+        latest_file = ROOT / "results_lm" / "LATEST"
+        if not latest_file.exists():
+            raise SystemExit(
+                "--lm latest: results_lm/LATEST not found. Run pretrain_lm.py first."
+            )
+        run_name = latest_file.read_text(encoding="utf-8").strip()
+        candidate = ROOT / "results_lm" / run_name / "lm_ckpt.pt"
+        if not candidate.exists():
+            raise SystemExit(
+                f"--lm latest: resolved to {candidate} but file not found."
+            )
+        return candidate
+    p = Path(arg)
+    if not p.is_absolute():
+        p = (ROOT / p).resolve()
+    if not p.exists():
+        raise SystemExit(f"--lm: file does not exist: {p}")
+    return p
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(ROOT / "config.yaml"))
     parser.add_argument("--tag", default=None, help="optional run name suffix")
+    parser.add_argument(
+        "--lm", default=None,
+        help="Path to LM ckpt to load. 'latest' = ckpt of most recent LM run "
+             "(results_lm/LATEST). Without this flag (and without lm.ckpt_path "
+             "in yaml), behavior is the no-LM baseline. Discriminative LR is "
+             "controlled by train.use_discriminative_lr in yaml (default true).",
+    )
     args = parser.parse_args()
 
     cfg = Config.from_yaml(args.config)
+    # CLI args become LOCAL state; cfg is treated as immutable.
+    # Resolution order for "load this LM ckpt":
+    #   --lm  >  cfg.lm.ckpt_path  >  None (no LM)
+    cli_lm_ckpt = _resolve_lm_arg(args.lm)
+    if cli_lm_ckpt is not None:
+        lm_ckpt_path = cli_lm_ckpt
+    elif cfg.lm.ckpt_path:
+        p = Path(cfg.lm.ckpt_path)
+        lm_ckpt_path = p if p.is_absolute() else (ROOT / p).resolve()
+    else:
+        lm_ckpt_path = None
     set_seed(cfg.seed)
 
     # ---- Run directory ----
@@ -241,10 +271,28 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = build_logger(run_dir)
     logger.info(f"run dir: {run_dir}")
+    if args.lm is not None:
+        logger.info(f"[cli] --lm {args.lm} -> resolved to {lm_ckpt_path}")
 
-    # snapshot config + code version for reproducibility
-    cfg.dump_yaml(run_dir / "config.yaml")
+    # Reproducibility snapshot: source yaml verbatim + recorded CLI invocation.
+    # No "merged config dump" — cfg is the only source of truth and remains
+    # untouched on disk.
     shutil.copy(args.config, run_dir / "config.source.yaml")
+    (run_dir / "cli_args.txt").write_text(
+        "python train.py " + " ".join(sys.argv[1:]) + "\n",
+        encoding="utf-8",
+    )
+    # resolved_overrides.txt records the *absolute* paths after resolving
+    # keywords like 'latest'. Use this file (not cli_args.txt) for reproduction.
+    resolved_lines = []
+    if lm_ckpt_path is not None:
+        resolved_lines.append(f"--lm {lm_ckpt_path}")
+    (run_dir / "resolved_overrides.txt").write_text(
+        "# Reproduce: python train.py --config <path/to/config.source.yaml>"
+        + (" " + " ".join(resolved_lines) if resolved_lines else "")
+        + "\n",
+        encoding="utf-8",
+    )
     sha = git_sha(ROOT)
     logger.info(f"git sha: {sha}")
 
@@ -274,10 +322,12 @@ def main():
                 f"max {lengths.max()} | sen_len={cfg.preprocess.sen_len}")
 
     # ---- Word2Vec ----
+    # w2v cache is the single source of truth: preprocess.w2v_cache_path in yaml.
     pp = cfg.preprocess
-    if pp.w2v_cache_path and Path(pp.w2v_cache_path).exists():
-        logger.info(f"loading cached w2v: {pp.w2v_cache_path}")
-        w2v = Word2Vec.load(pp.w2v_cache_path)
+    eff_w2v = pp.w2v_cache_path
+    if eff_w2v and Path(eff_w2v).exists():
+        logger.info(f"loading cached w2v: {eff_w2v}")
+        w2v = Word2Vec.load(eff_w2v)
     else:
         w2v = train_word2vec(
             corpus=train_tokens + unlabel_tokens + test_tokens,
@@ -324,7 +374,7 @@ def main():
     ).to(device)
 
     # ---- Optional: load LM-pretrained weights before init training ----
-    lm_loaded = maybe_load_lm_ckpt(cfg, vocab, model, logger)
+    lm_loaded = maybe_load_lm_ckpt(cfg, vocab, model, logger, lm_ckpt_path)
     init_optimizer = None
     if lm_loaded and cfg.train.use_discriminative_lr:
         init_optimizer = build_discriminative_optimizer(model, cfg.train, logger)
@@ -495,13 +545,23 @@ def main():
         if isinstance(_h, _logging.FileHandler):
             _h.close()
             logger.removeHandler(_h)
+    final_run_dir = run_dir
     try:
         acc_tag = f"{best.best_val_acc*100:.2f}"
         new_run_dir = run_dir.parent / f"{run_name}_{acc_tag}"
         run_dir.rename(new_run_dir)
+        final_run_dir = new_run_dir
         print(f"[done] artifacts at {new_run_dir}")
     except Exception as _e:
         print(f"[done] artifacts at {run_dir}  (rename skipped: {_e})")
+
+    # Update marker so ``pretrain_lm.py --w2v latest`` can pick up this run's
+    # w2v.model in the future. Best-effort; do not fail the run on IO errors.
+    try:
+        latest_file = final_run_dir.parent / "LATEST"
+        latest_file.write_text(final_run_dir.name, encoding="utf-8")
+    except Exception as _e:
+        print(f"[warn] could not update {final_run_dir.parent / 'LATEST'}: {_e}")
 
 
 if __name__ == "__main__":

@@ -92,9 +92,12 @@ class LMConfig:
     """LSTM Language Model pretraining configuration.
 
     See LSTM_LM_DESIGN.md for rationale of each knob.
+
+    Loading semantics: an LM ckpt is loaded iff a path is supplied EITHER via
+    ``--lm`` CLI flag (preferred) OR via ``ckpt_path`` here. There is no
+    separate "enable" flag — the presence of a path is the switch.
     """
-    enable: bool = False                     # master switch; when False, no LM loaded
-    ckpt_path: Optional[str] = None          # if set, skip pretraining and load this LM ckpt
+    ckpt_path: Optional[str] = None          # if set, load this LM ckpt at train time
     # Architecture (must align with classifier for clean weight transfer)
     hidden_dim: int = 192
     num_layers: int = 2

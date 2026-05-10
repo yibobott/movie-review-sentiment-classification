@@ -52,15 +52,16 @@ train:
   ema_warmup_epochs: 2         # don't pick EMA ckpt until shadow has warmed up
   word_dropout: 0.25           # A: stronger token-level dropout
   label_smoothing: 0.05        # C: soften BCE targets to reduce miscalibration / overfit
-  # Discriminative LR — only used when an LM ckpt is loaded (lm.enable=true & lm.ckpt_path set)
-  use_discriminative_lr: false # flip to true once lm.ckpt_path is wired to a trained LM
+  # Discriminative LR — only takes effect when an LM ckpt is loaded.
+  # Safe to leave on: it is a no-op when no LM is loaded (single-LR fallback).
+  use_discriminative_lr: true
   lr_embedding: 1.0e-5         # gentle update for LM-pretrained embedding
   lr_lstm: 1.0e-4              # medium update for LM-pretrained LSTM body
   lr_head: 5.0e-4              # full update for randomly-initialized attn + classifier head
 
 lm:
-  # LSTM Language-Model pretraining (see LSTM_LM_DESIGN.md)
-  enable: false                # turn on after running `python pretrain_lm.py`
+  # LSTM Language-Model pretraining (see LSTM_LM_DESIGN.md).
+  # ckpt_path: leave null and use `--lm <path>` CLI flag (preferred, keeps yaml clean).
   ckpt_path: null              # e.g. ./results_lm/<ts>/lm_ckpt.pt
   hidden_dim: 192              # MUST match model.hidden_dim
   num_layers: 2                # MUST match model.num_layers

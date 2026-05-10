@@ -56,8 +56,8 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = Config.from_yaml(args.config)
-    # Note: cfg.lm.enable is a flag for train.py (whether to LOAD a LM ckpt).
-    # Pretraining the LM itself is always allowed regardless of that flag.
+    # w2v cache is the single source of truth: preprocess.w2v_cache_path in yaml.
+    w2v_path = cfg.preprocess.w2v_cache_path
     set_seed(cfg.lm.seed)
 
     # ---- Run directory ----
@@ -67,8 +67,18 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = build_logger(run_dir, log_name="lm.log")
     logger.info(f"lm run dir: {run_dir}")
-    cfg.dump_yaml(run_dir / "config.yaml")
+    # Reproducibility snapshot: copy the source config verbatim + record CLI.
+    # We deliberately do NOT dump a "merged" config — the source yaml is the
+    # single source of truth, and CLI args are recorded separately.
     shutil.copy(args.config, run_dir / "config.source.yaml")
+    (run_dir / "cli_args.txt").write_text(
+        "python pretrain_lm.py " + " ".join(sys.argv[1:]) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "resolved_overrides.txt").write_text(
+        "# Reproduce: python pretrain_lm.py --config <path/to/config.source.yaml>\n",
+        encoding="utf-8",
+    )
     logger.info(f"git sha: {git_sha(ROOT)}")
 
     device = pick_device()
@@ -93,9 +103,17 @@ def main() -> None:
 
     # ---- Word2Vec (same hyperparams as classifier so vocab is identical) ----
     pp = cfg.preprocess
-    if pp.w2v_cache_path and Path(pp.w2v_cache_path).exists():
-        logger.info(f"loading cached w2v: {pp.w2v_cache_path}")
-        w2v = Word2Vec.load(pp.w2v_cache_path)
+    w2v_run_path = run_dir / "w2v.model"
+    if w2v_path and Path(w2v_path).exists():
+        logger.info(f"loading cached w2v: {w2v_path}")
+        w2v = Word2Vec.load(w2v_path)
+        # Make this LM run self-contained: re-save w2v inside the LM run dir.
+        # train.py's vocab integrity check expects ``<lm_run_dir>/w2v.model``
+        # to exist (as the canonical source of truth pointed at by
+        # preprocess.w2v_cache_path). Saving via gensim guarantees byte-level
+        # roundtrip on the loaded model state.
+        w2v.save(str(w2v_run_path))
+        logger.info(f"re-saved w2v -> {w2v_run_path} (self-contained LM run)")
     else:
         w2v = train_word2vec(
             corpus=labeled_tokens + unlabeled_tokens + test_tokens,
@@ -105,8 +123,8 @@ def main() -> None:
             sample=pp.w2v_sample,
             logger=logger,
         )
-        w2v.save(str(run_dir / "w2v.model"))
-        logger.info(f"saved w2v -> {run_dir / 'w2v.model'}")
+        w2v.save(str(w2v_run_path))
+        logger.info(f"saved w2v -> {w2v_run_path}")
 
     # ---- Vocab / persistence (single source of truth) ----
     vocab = Vocab(w2v)
@@ -183,10 +201,27 @@ def main() -> None:
     torch.save(state, ckpt)
     logger.info(f"final lm ckpt -> {ckpt} (val ppl {best.best_val_ppl:.2f})")
 
-    print(f"[lm done] {run_dir}")
-    print(f"[next]    1) set preprocess.w2v_cache_path: {run_dir / 'w2v.model'}")
-    print(f"[next]    2) set lm.ckpt_path:              {ckpt}")
-    print(f"[next]    3) set lm.enable: true")
+    # Summary (mirrors results/<run>/summary.txt for the classifier).
+    with open(run_dir / "summary.txt", "w", encoding="utf-8") as f:
+        f.write(f"best_val_ppl: {best.best_val_ppl:.4f}\n")
+        f.write(f"best_epoch: {best.best_epoch}\n")
+        f.write(f"stopped_at: {best.stopped_at}\n")
+        f.write(f"lm_vocab_size: {lm_vocab_size}\n")
+        f.write(f"v_cls: {v_cls}\n")
+        f.write(f"eos_idx: {eos_idx}\n")
+        f.write(f"embed_dim: {int(w2v.vector_size)}\n")
+        f.write(f"hidden_dim: {int(lc.hidden_dim)}\n")
+        f.write(f"num_layers: {int(lc.num_layers)}\n")
+        f.write(f"git_sha: {git_sha(ROOT)}\n")
+
+    # Update LATEST marker so ``train.py --lm latest`` finds this run.
+    latest_file = ROOT / "results_lm" / "LATEST"
+    latest_file.write_text(run_name, encoding="utf-8")
+    logger.info(f"updated marker {latest_file} -> {run_name}")
+
+    print(f"[lm done] {run_dir}  (val ppl {best.best_val_ppl:.2f})")
+    print(f"[next] run:  python train.py --lm latest")
+    print(f"[next] or:   python train.py --lm {ckpt}")
 
 
 if __name__ == "__main__":
