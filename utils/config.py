@@ -48,6 +48,7 @@ class ModelConfig:
     bidirectional: bool = True
     fix_embedding: bool = False
     pool: str = "attn_max_mean"
+    attn_heads: int = 4                       # # heads for mhattn pool; ignored for single-head attn
 
 
 @dataclass

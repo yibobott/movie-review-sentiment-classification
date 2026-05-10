@@ -21,6 +21,43 @@ class AttentionPool(nn.Module):
         return (x * w).sum(dim=1)  # (B, D)
 
 
+class MultiHeadAttentionPool(nn.Module):
+    """Learned-query multi-head attention pooling over time.
+
+    NOT a transformer block: there is no self-attention (Q/K/V from x),
+    no feed-forward sublayer, no residual / layernorm stack. Each head
+    owns a *learned* query vector that scores time steps via additive
+    attention; the head output is the attention-weighted sum over time.
+    Heads are concatenated and linearly projected back to ``dim``. This is
+    a strict generalization of ``AttentionPool`` (K=1 collapses to it).
+    """
+
+    def __init__(self, dim: int, n_heads: int = 4):
+        super().__init__()
+        assert dim % n_heads == 0, f"dim={dim} must be divisible by n_heads={n_heads}"
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+        # Per-head additive attention: project x -> head_dim, score with learned query.
+        self.proj = nn.Linear(dim, dim)
+        # Each head has its own learned query vector of size head_dim.
+        self.query = nn.Parameter(torch.randn(n_heads, self.head_dim) * 0.1)
+        # Output projection back to ``dim`` after head concat.
+        self.out_proj = nn.Linear(dim, dim)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        B, T, D = x.shape
+        h = torch.tanh(self.proj(x))                           # (B, T, D)
+        h = h.view(B, T, self.n_heads, self.head_dim)          # (B, T, H, d)
+        # scores[b, t, k] = <h[b, t, k, :], query[k, :]>
+        scores = torch.einsum("bthd,hd->bth", h, self.query)   # (B, T, H)
+        scores = scores.masked_fill(mask.unsqueeze(-1) == 0, float("-inf"))
+        w = torch.softmax(scores, dim=1).unsqueeze(-1)         # (B, T, H, 1)
+        x_h = x.view(B, T, self.n_heads, self.head_dim)        # (B, T, H, d)
+        head_out = (x_h * w).sum(dim=1)                        # (B, H, d)
+        concat = head_out.reshape(B, D)                        # (B, D)
+        return self.out_proj(concat)
+
+
 class LSTMClassifier(nn.Module):
     """BiLSTM + (attention, max, mean) pooling + MLP head.
 
@@ -39,6 +76,7 @@ class LSTMClassifier(nn.Module):
         fix_embedding: bool = False,
         pad_idx: int = 0,
         pool: str = "attn_max_mean",
+        attn_heads: int = 4,
     ):
         super().__init__()
         vocab_size, embed_dim = embedding.size()
@@ -63,9 +101,20 @@ class LSTMClassifier(nn.Module):
         )
 
         out_dim = hidden_dim * (2 if bidirectional else 1)
-        self.attn = AttentionPool(out_dim) if "attn" in pool else None
+        # Pool selection. ``mhattn`` is the multi-head learned-query pool;
+        # ``attn`` is the original single-head additive pool. Both can be
+        # combined with max/mean by listing them in the pool string.
+        use_mhattn = "mhattn" in pool
+        use_attn = (not use_mhattn) and ("attn" in pool)
+        if use_mhattn:
+            self.attn = MultiHeadAttentionPool(out_dim, n_heads=attn_heads)
+        elif use_attn:
+            self.attn = AttentionPool(out_dim)
+        else:
+            self.attn = None
 
-        n_pools = sum(p in pool for p in ("attn", "max", "mean"))
+        has_attn = use_mhattn or use_attn
+        n_pools = (1 if has_attn else 0) + (1 if "max" in pool else 0) + (1 if "mean" in pool else 0)
         fc_in = out_dim * n_pools
         self.feat_norm = nn.LayerNorm(fc_in)
         self.classifier = nn.Sequential(

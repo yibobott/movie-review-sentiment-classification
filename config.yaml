@@ -33,7 +33,8 @@ model:
   embed_noise_std: 0.20        # A2: 0.15->0.20, stronger Gaussian noise on embeddings
   bidirectional: true
   fix_embedding: false         # fine-tune embedding for better acc
-  pool: attn_max_mean          # concat of attention / max / mean pooling
+  pool: mhattn_max_mean        # D: multi-head learned-query attn pool + max + mean (HW4-compliant: no self-attn / FFN / residual)
+  attn_heads: 4                # 4 heads x 96 dim/head over BiLSTM out_dim=384 (192*2)
 
 train:
   batch_size: 64

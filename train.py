@@ -207,6 +207,7 @@ def main():
         embed_noise_std=mc.embed_noise_std,
         bidirectional=mc.bidirectional,
         fix_embedding=mc.fix_embedding, pool=mc.pool,
+        attn_heads=mc.attn_heads,
     ).to(device)
 
     ckpt = run_dir / "ckpt.pt"
