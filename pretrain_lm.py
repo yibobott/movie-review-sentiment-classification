@@ -56,11 +56,8 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = Config.from_yaml(args.config)
-    if not cfg.lm.enable:
-        raise SystemExit(
-            "lm.enable is False in config; flip it to true (and remove lm.ckpt_path) "
-            "before pretraining."
-        )
+    # Note: cfg.lm.enable is a flag for train.py (whether to LOAD a LM ckpt).
+    # Pretraining the LM itself is always allowed regardless of that flag.
     set_seed(cfg.lm.seed)
 
     # ---- Run directory ----
