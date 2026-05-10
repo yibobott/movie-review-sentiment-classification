@@ -408,8 +408,12 @@ def main():
             epochs_override=cfg.train.freeze_body_epochs,
         )
         # Restore phase A best, then unfreeze for phase B.
-        state = torch.load(ckpt, map_location=device)
+        # When freeze_body_epochs <= ema_warmup_epochs, the EMA ckpt is never
+        # written (EMA still warming up); fall back to the raw-best ckpt.
+        phase_a_ckpt = ckpt if ckpt.exists() else raw_ckpt_path(ckpt)
+        state = torch.load(phase_a_ckpt, map_location=device)
         model.load_state_dict(state["model_state"])
+        logger.info(f"[freeze] restored phase A best from {phase_a_ckpt.name}")
         for p in model.parameters():
             p.requires_grad = True
         logger.info("[freeze] phase A done; unfroze all params for phase B")
