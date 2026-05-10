@@ -23,7 +23,7 @@ preprocess:
   w2v_workers: 8
   w2v_sample: 1.0e-4           # subsample overly frequent words (the / of / and ...)
   # If given, skip training w2v and reuse cached model
-  w2v_cache_path: null
+  w2v_cache_path: "results/20260510_212731_92.00/w2v.model"
 
 model:
   hidden_dim: 192              # A2: 256->192, reduce capacity (prev gap train98/val92 = 6.7% overfit)
