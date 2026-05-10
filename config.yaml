@@ -79,7 +79,7 @@ lm:
   val_source: unlabeled_only
   include_labeled_in_train: false  # keep classifier val text entirely out of LM
   include_test_in_train: true      # transductive — test text (no labels) is fine
-  batch_size: 64
+  batch_size: 32              # v3.1: 64->32, OOM at 256d/bptt192
   epochs: 30                  # v3 (A): 16->30, RUN 220750 hit ppl 104.86 at ep16 still trending down; let cosine fully run
   lr: 1.0e-3
   weight_decay: 1.0e-6
