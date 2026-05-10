@@ -73,6 +73,11 @@ class TrainConfig:
     lr_embedding: float = 1.0e-5             # LM-pretrained: gentle update
     lr_lstm: float = 1.0e-4                  # LM-pretrained: medium update
     lr_head: float = 5.0e-4                  # randomly initialized: stronger update
+    # ULMFiT-style gradual unfreezing (active only when LM ckpt loaded + disc-LR on).
+    # Phase A: freeze embedding+LSTM, train head only with lr_head_warmup for K epochs.
+    # Phase B: unfreeze everything, use disc-LR for the remaining (epochs - K) epochs.
+    freeze_body_epochs: int = 0              # 0 disables gradual unfreezing (legacy behavior)
+    lr_head_warmup: float = 1.0e-3           # head-only warmup LR during frozen phase
 
 
 @dataclass

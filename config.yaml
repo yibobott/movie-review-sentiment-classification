@@ -55,9 +55,14 @@ train:
   # Discriminative LR — only takes effect when an LM ckpt is loaded.
   # Safe to leave on: it is a no-op when no LM is loaded (single-LR fallback).
   use_discriminative_lr: true
-  lr_embedding: 1.0e-5         # gentle update for LM-pretrained embedding
-  lr_lstm: 1.0e-4              # medium update for LM-pretrained LSTM body
+  lr_embedding: 5.0e-5         # v2: 1e-5->5e-5 (RUN 231016 init train acc plateaued at 86, body underfit)
+  lr_lstm: 3.0e-4              # v2: 1e-4->3e-4 (same reason)
   lr_head: 5.0e-4              # full update for randomly-initialized attn + classifier head
+  # Gradual unfreezing (ULMFiT-style). Phase A: head-only warmup with frozen body
+  # for K epochs at lr_head_warmup; Phase B: unfreeze + disc-LR for the remaining
+  # (epochs - K) epochs. No-op unless LM is loaded and use_discriminative_lr=true.
+  freeze_body_epochs: 3        # K epochs of head-only warmup
+  lr_head_warmup: 1.0e-3       # higher LR for head while body is frozen
 
 lm:
   # LSTM Language-Model pretraining (see LSTM_LM_DESIGN.md).
@@ -85,7 +90,7 @@ lm:
 
 self_training:
   enable: true
-  rounds: 3                    # r2 was still improving at last epoch -> add r3
+  rounds: 2                    # v2: 3->2; in RUN 212731 & 231016 r3 produced imbalanced pseudo (pos saturated) and never improved global best
   pos_threshold: 0.93          # C2: 0.90->0.93, LS=0.05 caps at ~0.975; tighten to reduce pseudo noise
   neg_threshold: 0.07          # C2: 0.10->0.07, mirror of pos_threshold
   max_pseudo_per_round: 15000  # smaller cap so r1 doesn't drain all confident pos in one round

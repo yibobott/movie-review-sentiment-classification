@@ -375,14 +375,55 @@ def main():
 
     # ---- Optional: load LM-pretrained weights before init training ----
     lm_loaded = maybe_load_lm_ckpt(cfg, vocab, model, logger, lm_ckpt_path)
+    ckpt = run_dir / "ckpt.pt"
+
+    # ---- Optional: phase A — head-only warmup with body frozen (ULMFiT) ----
+    # Active iff: LM loaded AND disc-LR on AND freeze_body_epochs > 0.
+    use_two_phase = (
+        lm_loaded
+        and cfg.train.use_discriminative_lr
+        and cfg.train.freeze_body_epochs > 0
+    )
+    if use_two_phase:
+        for p in model.embedding.parameters():
+            p.requires_grad = False
+        for p in model.lstm.parameters():
+            p.requires_grad = False
+        head_params = [p for p in model.parameters() if p.requires_grad]
+        warmup_optim = torch.optim.AdamW(
+            head_params,
+            lr=cfg.train.lr_head_warmup,
+            weight_decay=cfg.train.weight_decay,
+        )
+        logger.info(
+            f"[freeze] phase A: head-only warmup, "
+            f"epochs={cfg.train.freeze_body_epochs}, "
+            f"lr={cfg.train.lr_head_warmup:.1e}, "
+            f"trainable={sum(p.numel() for p in head_params)}"
+        )
+        train(
+            model, train_loader, val_loader, cfg.train, device,
+            ckpt_path=ckpt, logger=logger, tag="frozen",
+            optimizer=warmup_optim,
+            epochs_override=cfg.train.freeze_body_epochs,
+        )
+        # Restore phase A best, then unfreeze for phase B.
+        state = torch.load(ckpt, map_location=device)
+        model.load_state_dict(state["model_state"])
+        for p in model.parameters():
+            p.requires_grad = True
+        logger.info("[freeze] phase A done; unfroze all params for phase B")
+
+    # ---- Phase B (or single-phase init when no LM / no freeze) ----
     init_optimizer = None
     if lm_loaded and cfg.train.use_discriminative_lr:
         init_optimizer = build_discriminative_optimizer(model, cfg.train, logger)
 
-    ckpt = run_dir / "ckpt.pt"
+    init_epochs = cfg.train.epochs - (cfg.train.freeze_body_epochs if use_two_phase else 0)
     best = train(model, train_loader, val_loader, cfg.train, device,
                  ckpt_path=ckpt, logger=logger, tag="init",
-                 optimizer=init_optimizer)
+                 optimizer=init_optimizer,
+                 epochs_override=init_epochs)
     # restore best
     state = torch.load(ckpt, map_location=device)
     model.load_state_dict(state["model_state"])
