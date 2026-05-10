@@ -35,6 +35,8 @@ model:
   fix_embedding: false         # fine-tune embedding for better acc
   pool: attn_max_mean          # rolled back to single-head for stable baseline 92.35; multi-head kept in code for LM-era ablation
   attn_heads: 4                # ignored when pool=attn_max_mean
+  locked_dropout: 0.25         # v3 (F): variational dropout on LSTM output (time-shared mask), AWD-LSTM-style
+  weight_drop: 0.30            # v3 (E): DropConnect on weight_hh_l* (AWD-LSTM rec. 0.3 for IMDB)
 
 train:
   batch_size: 64
