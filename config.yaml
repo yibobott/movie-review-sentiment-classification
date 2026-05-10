@@ -26,7 +26,7 @@ preprocess:
   w2v_cache_path: "results/20260510_212731_92.00/w2v.model"
 
 model:
-  hidden_dim: 192              # A2: 256->192, reduce capacity (prev gap train98/val92 = 6.7% overfit)
+  hidden_dim: 256              # v3 (H): 192->256, scale up LM/classifier capacity for ppl<90 target
   num_layers: 2
   dropout: 0.6                 # A: stronger intra-LSTM + classifier dropout
   embed_dropout: 0.5           # A: stronger embedding dropout
@@ -68,24 +68,24 @@ lm:
   # LSTM Language-Model pretraining (see LSTM_LM_DESIGN.md).
   # ckpt_path: leave null and use `--lm <path>` CLI flag (preferred, keeps yaml clean).
   ckpt_path: null              # e.g. ./results_lm/<ts>/lm_ckpt.pt
-  hidden_dim: 192              # MUST match model.hidden_dim
+  hidden_dim: 256              # v3 (H): MUST match model.hidden_dim (192->256)
   num_layers: 2                # MUST match model.num_layers
   embed_dropout: 0.2          # v2: 0.3->0.2, v1 train PPL 146 > val PPL 122 suggests over-regularization
   dropout: 0.3                # v2: 0.4->0.3, same reason
   tie_weights: true
   init_from_w2v: true
-  bptt_len: 128
+  bptt_len: 192                # v3 (A): 128->192, reviews avg 260 tok; longer ctx helps LM learn sentence-level deps
   val_ratio: 0.05              # 5% of unlabeled docs (no labeled docs in LM val/train; design section 4.3)
   val_source: unlabeled_only
   include_labeled_in_train: false  # keep classifier val text entirely out of LM
   include_test_in_train: true      # transductive — test text (no labels) is fine
   batch_size: 64
-  epochs: 16                  # v2: 8->16, v1 cosine hit lr=0 at ep8 while val ppl still dropping (124.94->122.05)
+  epochs: 30                  # v3 (A): 16->30, RUN 220750 hit ppl 104.86 at ep16 still trending down; let cosine fully run
   lr: 1.0e-3
   weight_decay: 1.0e-6
   grad_clip: 0.5
   warmup_ratio: 0.05
-  early_stop_patience: 3      # v2: 2->3, give cosine tail more patience
+  early_stop_patience: 6      # v3 (A): 3->6, accommodate longer cosine tail
   seed: 42
 
 self_training:
