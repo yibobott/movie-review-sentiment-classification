@@ -74,6 +74,8 @@ lm:
   num_layers: 2                # MUST match model.num_layers
   embed_dropout: 0.2          # v2: 0.3->0.2, v1 train PPL 146 > val PPL 122 suggests over-regularization
   dropout: 0.3                # v2: 0.4->0.3, same reason
+  locked_dropout: 0.20        # v3.4 (F): variational dropout on LSTM output, AWD-LSTM IMDB rec.
+  weight_drop: 0.30           # v3.4 (E): DropConnect on weight_hh_l*. Safe on LM (no EMA in LM training).
   tie_weights: true
   init_from_w2v: true
   bptt_len: 192                # v3 (A): 128->192, reviews avg 260 tok; longer ctx helps LM learn sentence-level deps
