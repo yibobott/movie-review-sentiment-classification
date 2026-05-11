@@ -28,15 +28,15 @@ preprocess:
 model:
   hidden_dim: 256              # v3 (H): 192->256, scale up LM/classifier capacity for ppl<90 target
   num_layers: 2
-  dropout: 0.6                 # A: stronger intra-LSTM + classifier dropout
+  dropout: 0.5                 # v3.2: 0.6->0.5; 256d LM provides implicit reg, RUN 042539+145552 confirm over-reg, train acc capped at 96.5
   embed_dropout: 0.5           # A: stronger embedding dropout
   embed_noise_std: 0.20        # A2: 0.15->0.20, stronger Gaussian noise on embeddings
   bidirectional: true
   fix_embedding: false         # fine-tune embedding for better acc
   pool: attn_max_mean          # rolled back to single-head for stable baseline 92.35; multi-head kept in code for LM-era ablation
   attn_heads: 4                # ignored when pool=attn_max_mean
-  locked_dropout: 0.25         # v3 (F): variational dropout on LSTM output (time-shared mask), AWD-LSTM-style
-  weight_drop: 0.0             # v3.1: 0.30->0.0, EMA × WeightDrop incompatibility caused self-train degradation in RUN 042539 (-0.74pp final). Isolating F.
+  locked_dropout: 0.0          # v3.2: 0.25->0.0, RUN 145552 (F-only) showed -0.45pp regression vs A+H baseline (93.28 vs 93.73). F over-regularizes on top of existing dropout stack.
+  weight_drop: 0.0             # v3.1: 0.30->0.0, EMA × WeightDrop incompatibility caused self-train degradation in RUN 042539 (-0.74pp final).
 
 train:
   batch_size: 64
