@@ -29,7 +29,7 @@ model:
   hidden_dim: 256              # v3 (H): 192->256, scale up LM/classifier capacity for ppl<90 target
   num_layers: 2
   dropout: 0.5                 # v3.2: 0.6->0.5; 256d LM provides implicit reg, RUN 042539+145552 confirm over-reg, train acc capped at 96.5
-  embed_dropout: 0.5           # A: stronger embedding dropout
+  embed_dropout: 0.4           # v3.3: 0.5->0.4, RUN 152636 r2 train acc 97.20 unsaturated; embedding (22M params) has headroom
   embed_noise_std: 0.20        # A2: 0.15->0.20, stronger Gaussian noise on embeddings
   bidirectional: true
   fix_embedding: false         # fine-tune embedding for better acc
@@ -92,9 +92,9 @@ lm:
 
 self_training:
   enable: true
-  rounds: 2                    # v2: 3->2; in RUN 212731 & 231016 r3 produced imbalanced pseudo (pos saturated) and never improved global best
-  pos_threshold: 0.93          # C2: 0.90->0.93, LS=0.05 caps at ~0.975; tighten to reduce pseudo noise
-  neg_threshold: 0.07          # C2: 0.10->0.07, mirror of pos_threshold
+  rounds: 3                    # v3.3: 2->3; RUN 152636 r2 ep8 peak 93.92 still climbing, give r3 a chance with cleaner pseudo
+  pos_threshold: 0.95          # v3.3: 0.93->0.95, model is stronger now (93.9), pseudo noise is the bottleneck for r3
+  neg_threshold: 0.05          # v3.3: 0.07->0.05, mirror of pos_threshold
   max_pseudo_per_round: 15000  # smaller cap so r1 doesn't drain all confident pos in one round
   balance_pseudo: true         # take equal #pos and #neg each round
   finetune_epochs: 10          # was 5 — cosine hit lr=0 while val was still rising
