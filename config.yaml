@@ -28,7 +28,7 @@ preprocess:
 model:
   hidden_dim: 256              # v3 (H): 192->256, scale up LM/classifier capacity for ppl<90 target
   num_layers: 2
-  dropout: 0.5                 # v3.2: 0.6->0.5; 256d LM provides implicit reg, RUN 042539+145552 confirm over-reg, train acc capped at 96.5
+  dropout: 0.4                 # v3.6: 0.5->0.4; BiLM (RUN 193928) reached 94.35 with train acc 97.41 unsaturated. With richer init from forward+backward LM, classifier dropout can shrink further.
   embed_dropout: 0.4           # v3.3: 0.5->0.4, RUN 152636 r2 train acc 97.20 unsaturated; embedding (22M params) has headroom
   embed_noise_std: 0.20        # A2: 0.15->0.20, stronger Gaussian noise on embeddings
   bidirectional: true
