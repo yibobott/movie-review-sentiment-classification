@@ -53,19 +53,10 @@ def build_loaders(X_train, y_train, X_val, y_val, batch_size, word_dropout: floa
     return tr, va
 
 
-def maybe_load_lm_ckpt(cfg, vocab, model, logger, lm_ckpt_path: Path | None):
-    """Validate vocab alignment and transfer LM weights.
-
-    ``lm_ckpt_path`` is the resolved path (from --lm or cfg.lm.ckpt_path).
-    If None, returns False (no LM). On any mismatch, raises — never silently
-    falls through, since a misaligned LM is worse than no LM.
-    """
-    if lm_ckpt_path is None:
-        return False
+def _load_and_validate_lm_state(lm_ckpt_path: Path, cfg, vocab, logger, *, role: str):
+    """Common LM ckpt validation. Returns the loaded state dict."""
     if not lm_ckpt_path.exists():
         raise FileNotFoundError(f"LM ckpt does not exist: {lm_ckpt_path}")
-
-    # Locate the sibling vocab file written by pretrain_lm.py.
     lm_run_dir = lm_ckpt_path.parent
     vocab_json = lm_run_dir / "idx2word.json"
     if not vocab_json.exists():
@@ -73,17 +64,13 @@ def maybe_load_lm_ckpt(cfg, vocab, model, logger, lm_ckpt_path: Path | None):
             f"idx2word.json not found next to LM ckpt ({lm_run_dir}); "
             f"re-run pretrain_lm.py with the current code."
         )
-
-    # Element-wise vocab match + hash double-check (defense vs silent w2v drift).
     state = torch.load(lm_ckpt_path, map_location="cpu")
     expected_hash = state.get("vocab_hash")
     verify_vocab(vocab.idx2word, vocab_json, expected_hash=expected_hash)
     logger.info(
-        f"[lm-load] vocab integrity OK (hash={vocab_hash(vocab.idx2word)[:12]}\u2026, "
+        f"[lm-load:{role}] vocab integrity OK (hash={vocab_hash(vocab.idx2word)[:12]}\u2026, "
         f"V_cls={len(vocab)})"
     )
-
-    # Architecture sanity.
     if state.get("hidden_dim") and state["hidden_dim"] != cfg.model.hidden_dim:
         raise ValueError(
             f"LM hidden_dim={state['hidden_dim']} != classifier hidden_dim="
@@ -94,13 +81,52 @@ def maybe_load_lm_ckpt(cfg, vocab, model, logger, lm_ckpt_path: Path | None):
             f"LM embed_dim={state['embed_dim']} != classifier embed_dim="
             f"{vocab.embedding_matrix.size(1)}"
         )
+    return state
 
-    # Transfer weights.
-    transfer_lm_to_classifier(state["model_state"], model, logger=logger)
+
+def maybe_load_lm_ckpt(
+    cfg, vocab, model, logger,
+    lm_ckpt_path: Path | None,
+    lm_bw_ckpt_path: Path | None = None,
+):
+    """Validate vocab alignment and transfer LM weights.
+
+    ``lm_ckpt_path`` is the FORWARD LM ckpt (from --lm or cfg.lm.ckpt_path).
+    ``lm_bw_ckpt_path`` is an optional BACKWARD LM ckpt (from --lm-bw); when
+    given, its weights are transferred into the classifier reverse direction.
+    Returns True iff at least the forward LM was loaded.
+    """
+    if lm_ckpt_path is None:
+        if lm_bw_ckpt_path is not None:
+            raise ValueError("--lm-bw given without --lm; backward LM only is unsupported.")
+        return False
+    state = _load_and_validate_lm_state(lm_ckpt_path, cfg, vocab, logger, role="fwd")
+    if state.get("direction") not in (None, "forward"):
+        logger.info(
+            f"[lm-load:fwd] WARNING: ckpt direction='{state.get('direction')}' "
+            f"(expected 'forward'); proceeding anyway."
+        )
+
+    bw_state = None
+    if lm_bw_ckpt_path is not None:
+        bw_full = _load_and_validate_lm_state(lm_bw_ckpt_path, cfg, vocab, logger, role="bw")
+        if bw_full.get("direction") != "backward":
+            logger.info(
+                f"[lm-load:bw] WARNING: ckpt direction='{bw_full.get('direction')}' "
+                f"(expected 'backward'); proceeding anyway."
+            )
+        bw_state = bw_full["model_state"]
+
+    transfer_lm_to_classifier(
+        state["model_state"], model,
+        lm_bw_state=bw_state, logger=logger,
+    )
     logger.info(
-        f"[lm-load] loaded LM ckpt from {lm_ckpt_path} "
+        f"[lm-load] loaded forward LM from {lm_ckpt_path} "
         f"(val_ppl={state.get('val_ppl', 'NA')}, epoch={state.get('epoch', 'NA')})"
     )
+    if lm_bw_ckpt_path is not None:
+        logger.info(f"[lm-load] loaded backward LM from {lm_bw_ckpt_path}")
     return True
 
 
@@ -207,33 +233,34 @@ def pick_pseudo(
     return idx, labels
 
 
-def _resolve_lm_arg(arg: str | None) -> Path | None:
-    """Resolve --lm CLI arg to an absolute lm_ckpt.pt path.
+def _resolve_lm_arg(arg: str | None, *, marker: str = "LATEST", flag: str = "--lm") -> Path | None:
+    """Resolve --lm / --lm-bw CLI arg to an absolute lm_ckpt.pt path.
 
-    None        -> None (use config.lm settings as-is).
-    'latest'    -> ckpt of the most recent LM run (read from results_lm/LATEST).
-    <path>      -> as-is (made absolute against ROOT if relative).
+    None         -> None (use config.lm settings as-is).
+    'latest'     -> ckpt from results_lm/<marker> (LATEST for fwd, LATEST_BW for bw).
+    <path>       -> as-is (made absolute against ROOT if relative).
     """
     if arg is None:
         return None
     if arg == "latest":
-        latest_file = ROOT / "results_lm" / "LATEST"
+        latest_file = ROOT / "results_lm" / marker
         if not latest_file.exists():
             raise SystemExit(
-                "--lm latest: results_lm/LATEST not found. Run pretrain_lm.py first."
+                f"{flag} latest: results_lm/{marker} not found. "
+                f"Run pretrain_lm.py{' --reverse' if marker == 'LATEST_BW' else ''} first."
             )
         run_name = latest_file.read_text(encoding="utf-8").strip()
         candidate = ROOT / "results_lm" / run_name / "lm_ckpt.pt"
         if not candidate.exists():
             raise SystemExit(
-                f"--lm latest: resolved to {candidate} but file not found."
+                f"{flag} latest: resolved to {candidate} but file not found."
             )
         return candidate
     p = Path(arg)
     if not p.is_absolute():
         p = (ROOT / p).resolve()
     if not p.exists():
-        raise SystemExit(f"--lm: file does not exist: {p}")
+        raise SystemExit(f"{flag}: file does not exist: {p}")
     return p
 
 
@@ -243,10 +270,17 @@ def main():
     parser.add_argument("--tag", default=None, help="optional run name suffix")
     parser.add_argument(
         "--lm", default=None,
-        help="Path to LM ckpt to load. 'latest' = ckpt of most recent LM run "
-             "(results_lm/LATEST). Without this flag (and without lm.ckpt_path "
-             "in yaml), behavior is the no-LM baseline. Discriminative LR is "
-             "controlled by train.use_discriminative_lr in yaml (default true).",
+        help="Path to FORWARD LM ckpt to load. 'latest' = ckpt of most recent "
+             "forward-LM run (results_lm/LATEST). Without this flag (and without "
+             "lm.ckpt_path in yaml), behavior is the no-LM baseline. Discriminative "
+             "LR is controlled by train.use_discriminative_lr in yaml (default true).",
+    )
+    parser.add_argument(
+        "--lm-bw", default=None,
+        help="Optional path to a BACKWARD LM ckpt (trained via pretrain_lm.py "
+             "--reverse). 'latest' resolves to results_lm/LATEST_BW. When given, "
+             "the BiLSTM reverse direction is initialized from this checkpoint "
+             "(otherwise: random init). Requires --lm to also be set.",
     )
     args = parser.parse_args()
 
@@ -254,7 +288,7 @@ def main():
     # CLI args become LOCAL state; cfg is treated as immutable.
     # Resolution order for "load this LM ckpt":
     #   --lm  >  cfg.lm.ckpt_path  >  None (no LM)
-    cli_lm_ckpt = _resolve_lm_arg(args.lm)
+    cli_lm_ckpt = _resolve_lm_arg(args.lm, marker="LATEST", flag="--lm")
     if cli_lm_ckpt is not None:
         lm_ckpt_path = cli_lm_ckpt
     elif cfg.lm.ckpt_path:
@@ -262,6 +296,7 @@ def main():
         lm_ckpt_path = p if p.is_absolute() else (ROOT / p).resolve()
     else:
         lm_ckpt_path = None
+    lm_bw_ckpt_path = _resolve_lm_arg(args.lm_bw, marker="LATEST_BW", flag="--lm-bw")
     set_seed(cfg.seed)
 
     # ---- Run directory ----
@@ -273,6 +308,8 @@ def main():
     logger.info(f"run dir: {run_dir}")
     if args.lm is not None:
         logger.info(f"[cli] --lm {args.lm} -> resolved to {lm_ckpt_path}")
+    if args.lm_bw is not None:
+        logger.info(f"[cli] --lm-bw {args.lm_bw} -> resolved to {lm_bw_ckpt_path}")
 
     # Reproducibility snapshot: source yaml verbatim + recorded CLI invocation.
     # No "merged config dump" — cfg is the only source of truth and remains
@@ -287,6 +324,8 @@ def main():
     resolved_lines = []
     if lm_ckpt_path is not None:
         resolved_lines.append(f"--lm {lm_ckpt_path}")
+    if lm_bw_ckpt_path is not None:
+        resolved_lines.append(f"--lm-bw {lm_bw_ckpt_path}")
     (run_dir / "resolved_overrides.txt").write_text(
         "# Reproduce: python train.py --config <path/to/config.source.yaml>"
         + (" " + " ".join(resolved_lines) if resolved_lines else "")
@@ -376,7 +415,10 @@ def main():
     ).to(device)
 
     # ---- Optional: load LM-pretrained weights before init training ----
-    lm_loaded = maybe_load_lm_ckpt(cfg, vocab, model, logger, lm_ckpt_path)
+    lm_loaded = maybe_load_lm_ckpt(
+        cfg, vocab, model, logger, lm_ckpt_path,
+        lm_bw_ckpt_path=lm_bw_ckpt_path,
+    )
     ckpt = run_dir / "ckpt.pt"
 
     # ---- Optional: phase A — head-only warmup with body frozen (ULMFiT) ----

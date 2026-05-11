@@ -53,6 +53,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(ROOT / "config.yaml"))
     parser.add_argument("--tag", default=None, help="optional run name suffix")
+    parser.add_argument(
+        "--reverse", action="store_true",
+        help="Train a BACKWARD LM by reversing the flattened token streams. "
+             "Output ckpt is marked direction='backward' and registered under "
+             "results_lm/LATEST_BW (forward LATEST is untouched). Used by "
+             "train.py --lm-bw to initialize the BiLSTM reverse direction.",
+    )
     args = parser.parse_args()
 
     cfg = Config.from_yaml(args.config)
@@ -159,6 +166,16 @@ def main() -> None:
         f"test_docs={info['n_test_docs']}, labeled_docs={info['n_labeled_docs']}"
     )
 
+    # Backward LM: reverse the flattened token streams. BPTT chunks will then
+    # train the LSTM to predict the *previous* token (equivalently: forward
+    # LM on reversed text). Doc-level reversal vs full-stream reversal is
+    # equivalent here because BPTT chunks are shuffled by the DataLoader.
+    direction = "backward" if args.reverse else "forward"
+    if args.reverse:
+        train_seq = train_seq[::-1].copy()
+        val_seq = val_seq[::-1].copy()
+        logger.info(f"[reverse] training BACKWARD LM (token streams reversed)")
+
     train_ds = LMBPTTDataset(train_seq, lc.bptt_len)
     val_ds = LMBPTTDataset(val_seq, lc.bptt_len)
     logger.info(
@@ -199,6 +216,7 @@ def main() -> None:
         "hidden_dim": int(lc.hidden_dim),
         "num_layers": int(lc.num_layers),
         "eos_idx": int(eos_idx),
+        "direction": direction,
     })
     torch.save(state, ckpt)
     logger.info(f"final lm ckpt -> {ckpt} (val ppl {best.best_val_ppl:.2f})")
@@ -216,10 +234,11 @@ def main() -> None:
         f.write(f"num_layers: {int(lc.num_layers)}\n")
         f.write(f"git_sha: {git_sha(ROOT)}\n")
 
-    # Update LATEST marker so ``train.py --lm latest`` finds this run.
-    latest_file = ROOT / "results_lm" / "LATEST"
+    # Update LATEST/LATEST_BW marker so train.py --lm[-bw] latest finds this run.
+    marker_name = "LATEST_BW" if args.reverse else "LATEST"
+    latest_file = ROOT / "results_lm" / marker_name
     latest_file.write_text(run_name, encoding="utf-8")
-    logger.info(f"updated marker {latest_file} -> {run_name}")
+    logger.info(f"updated marker {latest_file} -> {run_name} (direction={direction})")
 
     print(f"[lm done] {run_dir}  (val ppl {best.best_val_ppl:.2f})")
     print(f"[next] run:  python train.py --lm latest")

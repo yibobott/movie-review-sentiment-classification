@@ -25,9 +25,17 @@ def transfer_lm_to_classifier(
     lm_state: Dict[str, torch.Tensor],
     classifier: torch.nn.Module,
     *,
+    lm_bw_state: Optional[Dict[str, torch.Tensor]] = None,
     logger: Optional[logging.Logger] = None,
 ) -> Dict[str, List[str]]:
-    """Copy LM weights into ``classifier`` in-place. Returns audit dict."""
+    """Copy LM weights into ``classifier`` in-place. Returns audit dict.
+
+    If ``lm_bw_state`` is provided (a backward LM trained on reversed token
+    streams), its LSTM weights are transferred into the classifier's reverse
+    direction (``*_reverse`` slots). Embedding is taken only from ``lm_state``
+    (forward LM); both LMs share the same vocab so it doesn't matter which
+    one we pick.
+    """
     transferred: List[str] = []
     skipped: List[str] = []
 
@@ -61,6 +69,13 @@ def transfer_lm_to_classifier(
         bare = _bare(k)
         if bare != k and bare not in lm_state:
             lm_state[bare] = lm_state[k]
+    # And for the optional backward-LM side.
+    if lm_bw_state is not None:
+        lm_bw_state = dict(lm_bw_state)
+        for k in list(lm_bw_state.keys()):
+            bare = _bare(k)
+            if bare != k and bare not in lm_bw_state:
+                lm_bw_state[bare] = lm_bw_state[k]
 
     # ---- 1) Embedding: clip the LM EOS row ---------------------------------
     lm_emb = lm_state.get("embedding.weight")
@@ -128,7 +143,61 @@ def transfer_lm_to_classifier(
                         f"{k} (shape mismatch lm={tuple(lm_v.shape)} cls={tuple(cls_v.shape)})"
                     )
 
-    # Backward direction (``*_reverse``) is left at default init in v1 — no backward LM.
+    # ---- 3) Backward direction (``*_reverse``), if backward LM is provided ----
+    # The backward LM was trained on token streams reversed at the BPTT level;
+    # its weights are uni-directional LSTM weights that, when applied to a
+    # reversed input, produce "predict previous token" representations. In a
+    # bidirectional classifier, the *_reverse parameters operate on the input
+    # processed in reverse temporal order, which is exactly the same semantics.
+    # So we copy backward-LM forward-direction weights into classifier reverse
+    # slots verbatim (with the same layer-1 zero-padding trick, but on the
+    # SECOND H dims because that's where the layer-0 backward output lives in
+    # the 2H concatenated layer-1 input).
+    if lm_bw_state is not None:
+        for L in range(num_layers):
+            lm_bw_ih = lm_bw_state.get(f"lstm.weight_ih_l{L}")
+            cls_ih_rev = cs.get(f"lstm.weight_ih_l{L}_reverse")
+            if lm_bw_ih is not None and cls_ih_rev is not None:
+                if lm_bw_ih.shape == cls_ih_rev.shape:
+                    cls_ih_rev.copy_(lm_bw_ih)
+                    transferred.append(f"lstm.weight_ih_l{L}_reverse [bw-LM]")
+                elif (
+                    L > 0
+                    and cls_ih_rev.shape[0] == lm_bw_ih.shape[0]
+                    and cls_ih_rev.shape[1] == 2 * lm_bw_ih.shape[1]
+                ):
+                    # Layer L>=1 in BiLSTM has input dim 2H = [fwd_l0_out, bwd_l0_out].
+                    # Backward LM layer L took H input (its own l0 output, which
+                    # corresponds to "bwd_l0_out" in the concat). Place LM weight
+                    # on the SECOND half (bwd half); zero the first half.
+                    cls_ih_rev.zero_()
+                    H_lm = lm_bw_ih.shape[1]
+                    cls_ih_rev[:, H_lm:].copy_(lm_bw_ih)
+                    transferred.append(
+                        f"lstm.weight_ih_l{L}_reverse [bw-LM, zero-padded first half]"
+                    )
+                else:
+                    skipped.append(
+                        f"lstm.weight_ih_l{L}_reverse (shape mismatch "
+                        f"bw_lm={tuple(lm_bw_ih.shape)} cls={tuple(cls_ih_rev.shape)})"
+                    )
+
+            for k_lm, k_cls in (
+                (f"lstm.weight_hh_l{L}",  f"lstm.weight_hh_l{L}_reverse"),
+                (f"lstm.bias_ih_l{L}",   f"lstm.bias_ih_l{L}_reverse"),
+                (f"lstm.bias_hh_l{L}",   f"lstm.bias_hh_l{L}_reverse"),
+            ):
+                lm_v = lm_bw_state.get(k_lm)
+                cls_v = cs.get(k_cls)
+                if lm_v is not None and cls_v is not None:
+                    if lm_v.shape == cls_v.shape:
+                        cls_v.copy_(lm_v)
+                        transferred.append(f"{k_cls} [bw-LM]")
+                    else:
+                        skipped.append(
+                            f"{k_cls} (shape mismatch "
+                            f"bw_lm={tuple(lm_v.shape)} cls={tuple(cls_v.shape)})"
+                        )
 
     # Strip the bare-name aliases we added earlier so load_state_dict doesn't
     # complain about "unexpected keys". The underlying parameter storage was
