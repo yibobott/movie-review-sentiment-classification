@@ -100,8 +100,6 @@ class SelfTrainingConfig:
 class LMConfig:
     """LSTM Language Model pretraining configuration.
 
-    See LSTM_LM_DESIGN.md for rationale of each knob.
-
     Loading semantics: an LM ckpt is loaded iff a path is supplied EITHER via
     ``--lm`` CLI flag (preferred) OR via ``ckpt_path`` here. There is no
     separate "enable" flag — the presence of a path is the switch.

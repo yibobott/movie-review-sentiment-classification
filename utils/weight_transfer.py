@@ -1,7 +1,7 @@
 """LSTM-LM -> classifier BiLSTM weight transfer.
 
-Strategy (see LSTM_LM_DESIGN.md \u00a72.3 and \u00a77)
----------------------------------------------
+Strategy
+--------
 * **Embedding**: copy ``[:V_cls]`` (drop the trailing EOS row).
 * **LSTM layer 0**: shapes match (``input_size = embed_dim`` for both LM and
   BiLSTM forward direction). Direct copy into the forward direction.

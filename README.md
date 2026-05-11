@@ -30,12 +30,22 @@ labeled data and refined with multi-round self-training on the unlabeled set.
 
 ```
 movie-review-sentiment-classification/
-├── train.py                       # classifier pipeline (train + self-train + predict)
+├── train.py                       # thin orchestrator (calls into pipeline/)
 ├── pretrain_lm.py                 # LSTM-LM pretraining (--reverse for backward LM)
 ├── config.yaml                    # all hyperparameters
 ├── requirements.txt               # numpy / scipy / pandas / gensim / pyyaml / tqdm
 ├── requirements-mac.txt           # adds the macOS PyTorch wheel
 ├── requirements-win-gpu.txt       # adds the Windows CUDA PyTorch wheel
+│
+├── pipeline/                      # classifier-pipeline stages (used by train.py)
+│   ├── cli.py                     # argparse + LM-path resolution (--lm, --lm-bw, 'latest')
+│   ├── run_dir.py                 # run-folder lifecycle: snapshot config / CLI, finalize rename
+│   ├── lm_loading.py              # LM ckpt load + vocab/arch integrity check + weight transfer
+│   ├── optim.py                   # build_discriminative_optimizer (embedding/lstm/head groups)
+│   ├── data_split.py              # stratified split + DataLoader builders
+│   ├── phases.py                  # Phase A (frozen-body warmup) + Phase B (disc-LR fine-tune)
+│   ├── self_training.py           # iterative pseudo-labeling loop + pick_pseudo
+│   └── predict.py                 # final dual-ckpt inference + submission writer
 │
 ├── data/
 │   ├── preprocess.py              # CSV loaders, tokenizer, Word2Vec, Vocab, head+tail trunc.
@@ -48,7 +58,7 @@ movie-review-sentiment-classification/
 │   └── regularization.py          # AWD-LSTM-style LockedDropout + WeightDrop (DropConnect)
 │
 ├── engine/
-│   ├── trainer.py                 # classifier loop, EMA, early stop, warmup-cosine LR
+│   ├── trainer.py                 # classifier loop, EMA, early stop, dual-ckpt promotion
 │   ├── lm_trainer.py              # LM loop, perplexity, grad clip
 │   ├── ema.py                     # ModelEMA helper
 │   └── inference.py               # predict_probs, predict.csv writer
@@ -251,8 +261,9 @@ inference.
   vs regularization trade-off
 - `model.locked_dropout` / `model.weight_drop` — AWD-LSTM regularizers; 0
   by default in the classifier (they interact awkwardly with EMA)
-- `lm.locked_dropout` / `lm.weight_drop` — *do* enable on the LM (no EMA
-  there); we use 0.20 / 0.30 to lower LM perplexity
+- `lm.locked_dropout` / `lm.weight_drop` — AWD-LSTM-style regularizers on
+  the LM. Disabled (0.0) in the final config: on this 18M-token corpus
+  they slowed convergence enough to hurt downstream classifier transfer.
 - `train.freeze_body_epochs` / `lr_head_warmup` — Phase-A schedule
 - `train.lr_embedding` / `lr_lstm` / `lr_head` — discriminative LR groups
   for Phase B

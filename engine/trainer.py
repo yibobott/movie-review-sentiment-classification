@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,70 @@ def raw_ckpt_path(ckpt_path: str | Path) -> Path:
     """Companion path for the raw-weights checkpoint (sibling of EMA ckpt)."""
     p = Path(ckpt_path)
     return p.with_suffix(".raw" + p.suffix)
+
+
+def _aggregate_legacy_best(b: "BestMetrics") -> None:
+    """Update ``best_val_acc`` / ``best_epoch`` to mirror max(ema, raw)."""
+    if b.best_ema_acc >= b.best_raw_acc:
+        b.best_val_acc = b.best_ema_acc
+        b.best_epoch = b.best_ema_epoch
+    else:
+        b.best_val_acc = b.best_raw_acc
+        b.best_epoch = b.best_raw_epoch
+
+
+def promote_round_best(
+    global_best: "BestMetrics",
+    round_best: "BestMetrics",
+    global_ckpt: str | Path,
+    round_ckpt: str | Path,
+    logger: logging.Logger,
+    tag: str,
+) -> None:
+    """Promote a self-training round's EMA / RAW best to the global tracks.
+
+    Both tracks are promoted independently: the regressed track is left
+    untouched. ``global_best`` is updated in-place. The aggregate
+    ``best_val_acc`` is recomputed at the end.
+    """
+    global_ckpt = Path(global_ckpt)
+    round_ckpt = Path(round_ckpt)
+
+    # EMA track
+    if round_best.best_ema_acc > global_best.best_ema_acc:
+        shutil.copyfile(round_ckpt, global_ckpt)
+        global_best.best_ema_acc = round_best.best_ema_acc
+        global_best.best_ema_epoch = round_best.best_ema_epoch
+        logger.info(
+            f"[{tag}] EMA promoted to global best "
+            f"({global_best.best_ema_acc*100:.2f})"
+        )
+    else:
+        logger.info(
+            f"[{tag}] EMA kept previous global best "
+            f"({global_best.best_ema_acc*100:.2f}); round best was "
+            f"{round_best.best_ema_acc*100:.2f}"
+        )
+
+    # RAW track
+    round_raw = raw_ckpt_path(round_ckpt)
+    global_raw = raw_ckpt_path(global_ckpt)
+    if round_best.best_raw_acc > global_best.best_raw_acc and round_raw.exists():
+        shutil.copyfile(round_raw, global_raw)
+        global_best.best_raw_acc = round_best.best_raw_acc
+        global_best.best_raw_epoch = round_best.best_raw_epoch
+        logger.info(
+            f"[{tag}] RAW promoted to global best "
+            f"({global_best.best_raw_acc*100:.2f})"
+        )
+    else:
+        logger.info(
+            f"[{tag}] RAW kept previous global best "
+            f"({global_best.best_raw_acc*100:.2f}); round best was "
+            f"{round_best.best_raw_acc*100:.2f}"
+        )
+
+    _aggregate_legacy_best(global_best)
 
 
 def _make_scheduler(
@@ -238,12 +303,7 @@ def train(
             )
 
         # Aggregate metrics: best_val_acc = max(ema, raw) for legacy callers.
-        if best.best_ema_acc >= best.best_raw_acc:
-            best.best_val_acc = best.best_ema_acc
-            best.best_epoch = best.best_ema_epoch
-        else:
-            best.best_val_acc = best.best_raw_acc
-            best.best_epoch = best.best_raw_epoch
+        _aggregate_legacy_best(best)
 
         if improved:
             patience = 0

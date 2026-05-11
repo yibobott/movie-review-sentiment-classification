@@ -1,7 +1,7 @@
 """LM corpus assembly + BPTT dataset.
 
-Design notes (see LSTM_LM_DESIGN.md §4)
----------------------------------------
+Design notes
+------------
 * **EOS != PAD**: PAD has ``padding_idx`` semantics (zero embedding, ignored by
   loss). Reusing it as EOS would silently train EOS at zero loss signal. We
   therefore extend the LM vocab by exactly one row at index ``V_cls`` and use
@@ -63,8 +63,8 @@ def build_lm_corpus(
 
     Returns (train_seq, val_seq, info_dict).
 
-    The val split is taken from ``unlabeled_tokens`` only (per design §4.3) so
-    classifier val docs (inside labeled) are never seen by the LM.
+    The val split is taken from ``unlabeled_tokens`` only so classifier
+    val docs (which live inside labeled) are never seen by the LM.
     """
     # 1) Split unlabeled at the document level (val source).
     un_train_idx, un_val_idx = split_docs_train_val(unlabeled_tokens, val_ratio, seed)

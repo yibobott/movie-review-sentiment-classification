@@ -3,7 +3,7 @@
 Notable choices
 ---------------
 * Loss is token-level cross entropy with ``ignore_index=PAD_IDX``; EOS is NOT
-  ignored (we want the LM to learn document boundaries — see design §4.2).
+  ignored (we want the LM to learn document boundaries).
 * Perplexity is reported as ``exp(mean_loss)``, computed as a token-weighted
   average so chunks of differing effective lengths (after PAD masking) do not
   bias the metric.

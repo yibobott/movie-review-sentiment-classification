@@ -1,7 +1,5 @@
 """Forward LSTM Language Model used for unsupervised pretraining.
 
-Design (see LSTM_LM_DESIGN.md §2 and §5)
-----------------------------------------
 * Unidirectional 2-layer LSTM (autoregressive next-token prediction).
 * Tied input embedding <-> output projection via a small ``adapter`` linear
   (since ``embed_dim != hidden_dim``). This both regularizes and saves

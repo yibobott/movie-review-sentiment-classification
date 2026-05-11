@@ -67,7 +67,7 @@ train:
   lr_head_warmup: 1.0e-3       # higher LR for head while body is frozen
 
 lm:
-  # LSTM Language-Model pretraining (see LSTM_LM_DESIGN.md).
+  # LSTM Language-Model pretraining.
   # ckpt_path: leave null and use `--lm <path>` CLI flag (preferred, keeps yaml clean).
   ckpt_path: null              # e.g. ./results_lm/<ts>/lm_ckpt.pt
   hidden_dim: 256              # v3 (H): MUST match model.hidden_dim (192->256)
@@ -79,7 +79,7 @@ lm:
   tie_weights: true
   init_from_w2v: true
   bptt_len: 192                # v3 (A): 128->192, reviews avg 260 tok; longer ctx helps LM learn sentence-level deps
-  val_ratio: 0.05              # 5% of unlabeled docs (no labeled docs in LM val/train; design section 4.3)
+  val_ratio: 0.05              # 5% of unlabeled docs (no labeled docs in LM val/train)
   val_source: unlabeled_only
   include_labeled_in_train: false  # keep classifier val text entirely out of LM
   include_test_in_train: true      # transductive — test text (no labels) is fine
